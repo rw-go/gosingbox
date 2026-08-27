@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"time"
 
+	"rwnode-singbox/internal/nftables"
 	"rwnode-singbox/internal/singbox"
 	"rwnode-singbox/internal/state"
 	"rwnode-singbox/internal/systemstats"
@@ -26,6 +27,7 @@ type App struct {
 	proc   *singbox.Process
 	cfg    *singbox.Options
 	sys    *systemstats.Reader
+	nft    *nftables.Manager
 
 	debounceMs time.Duration
 
@@ -36,11 +38,22 @@ type App struct {
 
 // New creates an App around the given sing-box process.
 func New(logger *slog.Logger, proc *singbox.Process, st *state.State, debounceMs int) *App {
+	nft := nftables.New()
+	if nft.Available() {
+		if err := nft.CreateTable(); err != nil {
+			logger.Warn("nftables table setup failed", "error", err)
+		} else {
+			logger.Info("nftables firewall ready")
+		}
+	} else {
+		logger.Warn("nftables unavailable (no nft binary or no CAP_NET_ADMIN); plugin firewall endpoints degraded")
+	}
 	return &App{
 		logger:     logger,
 		proc:       proc,
 		state:      st,
 		sys:        systemstats.NewReader(),
+		nft:        nft,
 		debounceMs: time.Duration(debounceMs) * time.Millisecond,
 		statsAddr:  proc.StatsAddr(),
 		logLevel:   proc.LogLevel(),
@@ -154,19 +167,19 @@ func (a *App) SystemStats() systemstats.System {
 func (a *App) Health() singleHealth {
 	status := a.proc.Status()
 	return singleHealth{
-		IsAlive:                  true,
-		IsXrayOnline:             status.Up,
-		Version:                  status.Version,
-		NodeVersion:              NodeVersion,
+		IsAlive:      true,
+		IsXrayOnline: status.Up,
+		Version:      status.Version,
+		NodeVersion:  NodeVersion,
 	}
 }
 
 // SingleHealth mirrors the GetNodeHealthCheck response model.
 type singleHealth struct {
-	IsAlive                  bool   `json:"isAlive"`
-	IsXrayOnline             bool   `json:"xrayInternalStatusCached"`
-	Version                  string `json:"xrayVersion"`
-	NodeVersion              string `json:"nodeVersion"`
+	IsAlive      bool   `json:"isAlive"`
+	IsXrayOnline bool   `json:"xrayInternalStatusCached"`
+	Version      string `json:"xrayVersion"`
+	NodeVersion  string `json:"nodeVersion"`
 }
 
 // ToJSON is a helper (kept for parity with CLI driver).
@@ -198,4 +211,41 @@ func (a *App) RawConfigJSON() map[string]any {
 		m = map[string]any{}
 	}
 	return m
+}
+
+// NftAvailable reports whether the nftables backend is usable.
+func (a *App) NftAvailable() bool {
+	return a.nft.Available()
+}
+
+// NftBlockIPs blocks a list of {ip, timeout} entries via nftables.
+func (a *App) NftBlockIPs(entries []nftables.BlockEntry) bool {
+	if !a.nft.Available() {
+		return false
+	}
+	for _, e := range entries {
+		if err := a.nft.BlockIP(e.IP, e.Timeout); err != nil {
+			a.logger.Warn("nft block ip failed", "ip", e.IP, "error", err)
+			return false
+		}
+	}
+	return true
+}
+
+// NftUnblockIPs removes IPs from the torrent/ingress sets.
+func (a *App) NftUnblockIPs(ips []string) bool {
+	if err := a.nft.UnblockIPs(ips); err != nil {
+		a.logger.Warn("nft unblock ips failed", "error", err)
+		return false
+	}
+	return true
+}
+
+// NftRecreateTables rebuilds the firewall table.
+func (a *App) NftRecreateTables() bool {
+	if err := a.nft.CreateTable(); err != nil {
+		a.logger.Warn("nft recreate tables failed", "error", err)
+		return false
+	}
+	return true
 }

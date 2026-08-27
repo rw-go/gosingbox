@@ -92,6 +92,7 @@ func runServer(logger *slog.Logger, cfg *config.Config, application *app.App, pr
 	controller.NewStats(application, logger).Router(mux)
 	controller.NewHandler(application, logger).Router(mux)
 	controller.NewInternal(application, logger).Router(mux)
+	controller.NewPlugin(application, logger).Router(mux)
 
 	srv := &server.ServerFactory{
 		Mux:     mux,

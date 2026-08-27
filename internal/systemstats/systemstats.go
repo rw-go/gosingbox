@@ -29,20 +29,20 @@ type Info struct {
 
 // InterfaceRate mirrors libs/contract NetworkInterfaceSchema.
 type InterfaceRate struct {
-	Interface    string  `json:"interface"`
+	Interface     string  `json:"interface"`
 	RxBytesPerSec float64 `json:"rxBytesPerSec"`
 	TxBytesPerSec float64 `json:"txBytesPerSec"`
-	RxTotal      uint64  `json:"rxTotal"`
-	TxTotal      uint64  `json:"txTotal"`
+	RxTotal       uint64  `json:"rxTotal"`
+	TxTotal       uint64  `json:"txTotal"`
 }
 
 // Stats mirrors libs/contract NodeSystemStatsSchema.
 type Stats struct {
-	MemoryFree uint64          `json:"memoryFree"`
-	MemoryUsed uint64          `json:"memoryUsed"`
-	Uptime     float64         `json:"uptime"`
-	LoadAvg    []float64       `json:"loadAvg"`
-	Interface  *InterfaceRate  `json:"interface"`
+	MemoryFree uint64         `json:"memoryFree"`
+	MemoryUsed uint64         `json:"memoryUsed"`
+	Uptime     float64        `json:"uptime"`
+	LoadAvg    []float64      `json:"loadAvg"`
+	Interface  *InterfaceRate `json:"interface"`
 }
 
 // System mirrors NodeSystemSchema (info + stats) used in the start response.
@@ -53,12 +53,12 @@ type System struct {
 
 // Reader gathers system + network stats.
 type Reader struct {
-	mu         sync.RWMutex
-	hostname   string
-	release    string
-	cpuModel   string
-	prev       map[string]ifaceCounters
-	rates      map[string]*InterfaceRate
+	mu           sync.RWMutex
+	hostname     string
+	release      string
+	cpuModel     string
+	prev         map[string]ifaceCounters
+	rates        map[string]*InterfaceRate
 	defaultIface string
 }
 
