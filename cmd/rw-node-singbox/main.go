@@ -1,0 +1,194 @@
+// Command rw-node-singbox is the Go remnawave node with a sing-box data plane.
+//
+// Two modes:
+//
+//	-config <file>   : data-plane driver — transpiles a panel config, starts
+//	                   sing-box, polls stats (for low-level validation).
+//	-serve           : full panel-facing HTTPS server (mTLS + JWT), equivalent
+//	                   to the Node.js remnawave node.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"rwnode-singbox/internal/app"
+	"rwnode-singbox/internal/config"
+	"rwnode-singbox/internal/controller"
+	"rwnode-singbox/internal/payload"
+	"rwnode-singbox/internal/server"
+	"rwnode-singbox/internal/singbox"
+	"rwnode-singbox/internal/state"
+	"rwnode-singbox/internal/transpiler"
+)
+
+func main() {
+	serveMode := flag.Bool("serve", false, "run as full panel-facing HTTPS server")
+	configPath := flag.String("config", "", "panel xrayConfig JSON file (data-plane driver)")
+	binPath := flag.String("singbox-bin", "", "sing-box binary path (override env)")
+	confOut := flag.String("out", "", "generated sing-box config path (override env)")
+	restartAfter := flag.Duration("demo-restart", 0, "if >0, trigger a graceful restart after this delay (driver)")
+	flag.Parse()
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Error("config", "error", err)
+		os.Exit(1)
+	}
+
+	proc := singbox.NewProcess(singbox.Options{
+		BinPath:   firstNonEmpty(*binPath, cfg.SingboxBinPath),
+		ConfPath:  firstNonEmpty(*confOut, cfg.SingboxConfigPath),
+		StatsAddr: cfg.SingboxStatsAddr,
+		LogDir:    cfg.SingboxLogDir,
+		LogLevel:  cfg.SingboxLogLevel,
+		DrainMs:   time.Duration(cfg.SingboxDrainMs) * time.Millisecond,
+		Logger:    logger,
+	})
+
+	st := state.New()
+	application := app.New(logger, proc, st, cfg.SingboxDebounceMs)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if *serveMode {
+		runServer(logger, cfg, application, proc)
+		<-ctx.Done()
+		logger.Info("shutting down")
+		application.Stop()
+		return
+	}
+
+	// Data-plane driver mode.
+	runDriver(logger, cfg, application, proc, *configPath, *restartAfter)
+	<-ctx.Done()
+	logger.Info("shutting down")
+	application.Stop()
+}
+
+func runServer(logger *slog.Logger, cfg *config.Config, application *app.App, proc *singbox.Process) {
+	if cfg.SecretKey == "" {
+		logger.Error("SECRET_KEY is required in serve mode")
+		os.Exit(1)
+	}
+	p, err := payload.Parse(cfg.SecretKey)
+	if err != nil {
+		logger.Error("parse SECRET_KEY payload", "error", err)
+		os.Exit(1)
+	}
+
+	mux := http.NewServeMux()
+	controller.NewXray(application, logger).Router(mux)
+	controller.NewStats(application, logger).Router(mux)
+	controller.NewHandler(application, logger).Router(mux)
+	controller.NewInternal(application, logger).Router(mux)
+
+	srv := &server.ServerFactory{
+		Mux:     mux,
+		Payload: p,
+	}
+	addr := fmt.Sprintf(":%d", cfg.NodePort)
+	logger.Info("panel HTTPS server starting", "addr", addr)
+	go func() {
+		if err := srv.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
+			logger.Error("server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
+}
+
+func runDriver(logger *slog.Logger, cfg *config.Config, application *app.App, proc *singbox.Process, configPath string, restartAfter time.Duration) {
+	if configPath == "" {
+		logger.Error("data-plane driver requires -config")
+		os.Exit(1)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		logger.Error("read panel config", "error", err)
+		os.Exit(1)
+	}
+	res, err := transpiler.Transpile(raw, cfg.SingboxStatsAddr, cfg.SingboxLogLevel, nil)
+	if err != nil {
+		logger.Error("transpile", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("transpiled",
+		"inbounds", len(res.Config["inbounds"].([]any)),
+		"outbounds", len(res.Config["outbounds"].([]any)),
+		"inboundTag", res.InboundTag,
+	)
+	if err := application.Start(raw); err != nil {
+		logger.Error("apply config", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("sing-box online", "version", proc.Version(), "pid", proc.Pid())
+
+	if restartAfter > 0 {
+		go func() {
+			time.Sleep(restartAfter)
+			logger.Info("driver: applying same config to test graceful restart")
+			if err := application.Start(raw); err != nil {
+				logger.Error("driver restart", "error", err)
+			}
+		}()
+	}
+
+	// Poll stats every 5s.
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-time.After(5 * time.Second):
+			reportStats(logger, cfg.SingboxStatsAddr)
+			ticker.Reset(5 * time.Second)
+		}
+	}
+}
+
+func reportStats(logger *slog.Logger, addr string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, err := singbox.NewStatsClientForTest(addr)
+	if err != nil {
+		logger.Debug("dial stats", "error", err)
+		return
+	}
+	defer c.Close()
+	sys, err := c.GetSysStats(ctx)
+	if err != nil {
+		logger.Debug("GetSysStats", "error", err)
+	} else {
+		logger.Info("sysstats", "uptime", sys.Uptime, "goroutines", sys.NumGoroutine)
+	}
+	stats, err := c.QueryStats(ctx, []string{"user>>>"}, false)
+	if err != nil {
+		logger.Debug("QueryStats", "error", err)
+		return
+	}
+	if len(stats) == 0 {
+		logger.Debug("querystats: no user counters")
+		return
+	}
+	for _, s := range stats {
+		logger.Info("counter", "name", s.Name, "value", s.Value)
+	}
+}
+
+func firstNonEmpty(s ...string) string {
+	for _, v := range s {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
