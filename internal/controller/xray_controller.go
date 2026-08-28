@@ -4,6 +4,7 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -42,13 +43,16 @@ func (x *Xray) start(w http.ResponseWriter, r *http.Request) {
 	}
 	var req StartXrayRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		x.log.Error("start: body decode failed", "error", err)
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{
 			"isStarted": false,
 			"error":     "invalid request body",
 		}})
 		return
 	}
+	x.log.Debug("start: decoded request", "xrayConfigBytes", len(req.XrayConfig), "internals", fmt.Sprintf("%+v", req.Internals))
 	if len(req.XrayConfig) == 0 {
+		x.log.Error("start: xrayConfig is empty")
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{
 			"isStarted": false,
 			"error":     "xrayConfig is empty",
@@ -61,7 +65,7 @@ func (x *Xray) start(w http.ResponseWriter, r *http.Request) {
 		x.writeStartResponse(w, false, err.Error())
 		return
 	}
-
+	x.log.Info("start: sing-box started successfully")
 	x.writeStartResponse(w, true, "")
 }
 
