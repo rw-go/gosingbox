@@ -18,7 +18,9 @@ import (
 )
 
 // NodeVersion is the reported node version (set via ldflags at build time).
-var NodeVersion = "3.3.2-go"
+// Must be a bare semver — the panel parses this to decide node compatibility,
+// and a suffix like "-go" is treated as an outdated/unknown version.
+var NodeVersion = "3.3.2"
 
 // App is the top-level orchestrator.
 type App struct {

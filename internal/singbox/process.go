@@ -10,11 +10,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
+
+// versionRe extracts a bare semver (optionally with prerelease suffix) from a
+// `sing-box version` first line such as "sing-box version v1.12.25".
+var versionRe = regexp.MustCompile(`v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)`)
 
 // Process manages the sing-box child process lifecycle.
 type Process struct {
@@ -358,12 +363,13 @@ func (p *Process) refreshVersion() error {
 		return err
 	}
 	first := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
-	var v string
-	if i := strings.Index(first, " "); i >= 0 {
-		v = strings.TrimSpace(first[i+1:])
-	} else {
+	// Extract a bare semver (optionally with a -suffix), mirroring the Node.js
+	// singbox-process.service refreshVersion regex: /v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.
+	v := versionRe.FindString(first)
+	if v == "" {
 		v = first
 	}
+	v = strings.TrimPrefix(v, "v")
 	p.mu.Lock()
 	p.version = v
 	p.mu.Unlock()

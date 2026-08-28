@@ -71,7 +71,7 @@ func (x *Xray) writeStartResponse(w http.ResponseWriter, started bool, errMsg st
 	sys := x.app.SystemStats()
 	resp := map[string]any{
 		"isStarted":       started,
-		"version":         x.app.Version(),
+		"version":         errOrNil(x.app.Version()),
 		"error":           errOrNil(errMsg),
 		"nodeInformation": map[string]any{"version": app.NodeVersion},
 		"system":          sys,
@@ -99,7 +99,7 @@ func (x *Xray) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
 		"isAlive":                  h.IsAlive,
 		"xrayInternalStatusCached": h.IsXrayOnline,
-		"xrayVersion":              h.Version,
+		"xrayVersion":              errOrNil(h.Version),
 		"nodeVersion":              h.NodeVersion,
 	}})
 }
