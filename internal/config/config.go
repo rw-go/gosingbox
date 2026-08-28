@@ -13,6 +13,9 @@ type Config struct {
 
 	SecretKey string
 
+	// LogLevel controls the node's own log verbosity (debug|info|warn|error).
+	LogLevel string
+
 	InternalRESTToken  string
 	InternalSocketPath string
 
@@ -48,6 +51,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		NodePort:           envInt("NODE_PORT", 2222),
 		SecretKey:          os.Getenv("SECRET_KEY"),
+		LogLevel:           envOr("LOG_LEVEL", "info"),
 		InternalRESTToken:  envOr("INTERNAL_REST_TOKEN", ""),
 		InternalSocketPath: envOr("INTERNAL_SOCKET_PATH", ""),
 		SingboxBinPath:     envOr("SINGBOX_BIN_PATH", "/usr/local/bin/sing-box"),

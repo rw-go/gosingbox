@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,13 +38,13 @@ func main() {
 	restartAfter := flag.Duration("demo-restart", 0, "if >0, trigger a graceful restart after this delay (driver)")
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Error("config", "error", err)
+		slog.New(slog.NewTextHandler(os.Stdout, nil)).Error("config", "error", err)
 		os.Exit(1)
 	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: parseLogLevel(cfg.LogLevel)}))
 
 	proc := singbox.NewProcess(singbox.Options{
 		BinPath:   firstNonEmpty(*binPath, cfg.SingboxBinPath),
@@ -97,6 +98,7 @@ func runServer(logger *slog.Logger, cfg *config.Config, application *app.App, pr
 	srv := &server.ServerFactory{
 		Mux:     mux,
 		Payload: p,
+		Logger:  logger,
 	}
 	addr := fmt.Sprintf(":%d", cfg.NodePort)
 	logger.Info("panel HTTPS server starting", "addr", addr)
@@ -192,4 +194,19 @@ func firstNonEmpty(s ...string) string {
 		}
 	}
 	return ""
+}
+
+// parseLogLevel maps a LOG_LEVEL env string (debug/info/warn/error) to a
+// slog.Level. Defaults to info.
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }

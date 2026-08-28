@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -20,12 +21,17 @@ import (
 type ServerFactory struct {
 	Mux     *http.ServeMux
 	Payload *payload.Payload
+	Logger  *slog.Logger
 }
 
 // ListenAndServe builds the full mTLS + JWT handler and starts listening.
 // If Payload is nil, the server runs without HTTPS (plain HTTP, not recommended).
 func (f *ServerFactory) ListenAndServe(addr string) error {
-	handler := f.jwtWrap(f.Mux)
+	var next http.Handler = f.Mux
+	if f.Logger != nil {
+		next = f.logWrap(f.Mux)
+	}
+	handler := f.jwtWrap(next)
 
 	server := &http.Server{
 		Addr:              addr,
@@ -51,6 +57,14 @@ func (f *ServerFactory) ListenAndServe(addr string) error {
 		return server.ListenAndServeTLS("", "")
 	}
 	return server.ListenAndServe()
+}
+
+// logWrap logs every request at debug level (method, path, remote).
+func (f *ServerFactory) logWrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.Logger.Debug("http request", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (f *ServerFactory) jwtWrap(next http.Handler) http.Handler {
