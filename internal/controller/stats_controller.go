@@ -73,16 +73,32 @@ func (s *Stats) systemStats(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w)
 		return
 	}
+
+	// The panel uses get-system-stats as the node liveness probe: if it returns
+	// HTTP 200 it marks the node connected, and if `xrayInfo` is null it reports
+	// "Required info is missing. Outdated version?" WITHOUT ever starting the
+	// node. Mirror the official node here — when the data plane is down, return
+	// the FAILED_TO_GET_SYSTEM_STATS error (500) so the panel treats the node as
+	// disconnected and pushes a start (self-healing on fresh installs).
+	if !s.app.IsOnline() {
+		s.log.Debug("system stats: sing-box not running")
+		writeOfficialError(w, r, http.StatusInternalServerError, "Failed to get system stats", "A010")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	var xrayInfo any
-	if sys, err := s.app.SysStats(ctx); err == nil {
-		xrayInfo = sys
+	sysStats, err := s.app.SysStats(ctx)
+	if err != nil {
+		s.log.Warn("system stats: xray stats unavailable", "error", err)
+		writeOfficialError(w, r, http.StatusInternalServerError, "Failed to get system stats", "A010")
+		return
 	}
+
 	sys := s.app.SystemStats()
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
-		"xrayInfo": xrayInfo,
+		"xrayInfo": sysStats,
 		"plugins": map[string]any{
 			"torrentBlocker": map[string]any{"reportsCount": 0},
 		},
@@ -166,6 +182,24 @@ func (s *Stats) geocheck(w http.ResponseWriter, r *http.Request) {
 
 func (s *Stats) notImplemented(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{}})
+}
+
+// errorEnvelope mirrors the official HttpExceptionFilter error shape the panel
+// parses from 5xx responses: { timestamp, path, message, errorCode }.
+type errorEnvelope struct {
+	Timestamp string `json:"timestamp"`
+	Path      string `json:"path"`
+	Message   string `json:"message"`
+	ErrorCode string `json:"errorCode"`
+}
+
+func writeOfficialError(w http.ResponseWriter, r *http.Request, code int, message, errorCode string) {
+	writeJSON(w, code, errorEnvelope{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Path:      r.URL.Path,
+		Message:   message,
+		ErrorCode: errorCode,
+	})
 }
 
 // queryAggregated queries one tag's traffic for inbound/outbound.
