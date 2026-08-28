@@ -1,5 +1,20 @@
-// Package payload parses the panel-issued SECRET_KEY payload (node certs +
-// JWT public key) required for mTLS and JWT verification.
+// Package payload parses the panel-issued SECRET_KEY payload (node identity
+// material: CA cert, node cert, node private key, JWT public key) required for
+// mTLS and JWT verification.
+//
+// The official node (decode-node-payload util) expects SECRET_KEY to be a
+// base64-encoded JSON object with camelCase fields:
+//
+//	{
+//	  "caCertPem":    "-----BEGIN CERTIFICATE-----\n...",
+//	  "jwtPublicKey": "-----BEGIN PUBLIC KEY-----\n...",
+//	  "nodeCertPem":  "-----BEGIN CERTIFICATE-----\n...",
+//	  "nodeKeyPem":   "-----BEGIN PRIVATE KEY-----\n..."
+//	}
+//
+// where PEM bodies contain literal `\n` escape sequences that must be turned
+// back into real newlines. Plain-JSON (non-base64) payloads and the legacy
+// snake_case field names are also tolerated for backwards compatibility.
 package payload
 
 import (
@@ -9,28 +24,41 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"strings"
 )
 
 // Payload holds the decoded node identity material from SECRET_KEY.
 type Payload struct {
-	NodeKeyPEM   string // PEM RSA private key
+	NodeKeyPEM   string // PEM RSA private key (node key)
 	NodeCertPEM  string // PEM node certificate
 	CACertPEM    string // PEM CA certificate
 	JWTPublicKey *rsa.PublicKey
 	RawJSON      map[string]any
 }
 
-// Parse decodes the SECRET_KEY JSON payload and extracts the crypto material.
-// Expected envelope mirrors the official node (decode-node-payload util).
+// Parse decodes SECRET_KEY into node identity material.
+//
+//  1. Tries base64-decode then JSON-parse (official panel format).
+//  2. Falls back to plain JSON (already-decoded payload).
 func Parse(secretKey string) (*Payload, error) {
-	raw := []byte(secretKey)
+	trimmed := strings.TrimSpace(secretKey)
 
-	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		// Older panels wrap in a base64 string field; try our known shapes.
-		return parseLegacy(secretKey)
+	// Official: base64(JSON).
+	if raw, err := base64.StdEncoding.DecodeString(trimmed); err == nil {
+		var obj map[string]any
+		if json.Unmarshal(raw, &obj) == nil && len(obj) > 0 {
+			return parseObject(obj)
+		}
+		// base64 decoded but not JSON; continue to plain-JSON attempt.
 	}
-	return parseObject(obj)
+
+	// Fallback: plain JSON.
+	var obj map[string]any
+	if json.Unmarshal([]byte(trimmed), &obj) == nil && len(obj) > 0 {
+		return parseObject(obj)
+	}
+
+	return nil, fmt.Errorf("unable to parse SECRET_KEY payload (expected base64-encoded JSON)")
 }
 
 func parseObject(obj map[string]any) (*Payload, error) {
@@ -45,21 +73,21 @@ func parseObject(obj map[string]any) (*Payload, error) {
 		return ""
 	}
 
-	nodeKey := get("node_key", "nodeKey", "key")
-	nodeCert := get("node_cert", "nodeCert", "cert")
-	caCert := get("ca_cert", "caCert", "ca")
-	jwtPub := get("jwt_public_key", "jwtPublicKey", "public_key")
+	nodeKey := get("nodeKeyPem", "node_key", "nodeKey", "key")
+	nodeCert := get("nodeCertPem", "node_cert", "nodeCert", "cert")
+	caCert := get("caCertPem", "ca_cert", "caCert", "ca")
+	jwtPub := get("jwtPublicKey", "jwt_public_key", "jwtPublicKey")
 
 	if nodeKey == "" || nodeCert == "" || caCert == "" {
-		return nil, fmt.Errorf("SECRET_KEY payload missing node_key/node_cert/ca_cert")
+		return nil, fmt.Errorf("SECRET_KEY payload missing nodeKeyPem/nodeCertPem/caCertPem")
 	}
 
-	p.NodeKeyPEM = nodeKey
-	p.NodeCertPEM = nodeCert
-	p.CACertPEM = caCert
+	p.NodeKeyPEM = normalizePem(nodeKey)
+	p.NodeCertPEM = normalizePem(nodeCert)
+	p.CACertPEM = normalizePem(caCert)
 
 	if jwtPub != "" {
-		key, err := parseRSAPublicKeyPEM([]byte(jwtPub))
+		key, err := parseRSAPublicKeyPEM([]byte(normalizePem(jwtPub)))
 		if err != nil {
 			return nil, fmt.Errorf("parse jwt public key: %w", err)
 		}
@@ -68,17 +96,30 @@ func parseObject(obj map[string]any) (*Payload, error) {
 	return p, nil
 }
 
-// parseLegacy handles the "secretKey" (single string) or base64-wrapped shapes
-// used by some panels. If decodable as JSON with cert fields, reuse parseObject.
-func parseLegacy(secretKey string) (*Payload, error) {
-	// Try base64 decode then JSON parse.
-	if raw, err := base64.StdEncoding.DecodeString(secretKey); err == nil {
-		var obj map[string]any
-		if json.Unmarshal(raw, &obj) == nil {
-			return parseObject(obj)
+// normalizePem turns literal `\n` escape sequences into real newlines and
+// normalizes the PEM header/footer line breaks (mirrors the Node.js
+// decode-node-payload normalizePem).
+func normalizePem(pemStr string) string {
+	s := strings.ReplaceAll(pemStr, `\n`, "\n")
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
 		}
+		if strings.HasPrefix(trimmed, "-----BEGIN ") {
+			out = append(out, trimmed)
+			continue
+		}
+		if strings.HasPrefix(trimmed, "-----END ") {
+			out = append(out, trimmed)
+			continue
+		}
+		out = append(out, trimmed)
 	}
-	return nil, fmt.Errorf("unable to parse SECRET_KEY payload")
+	return strings.Join(out, "\n")
 }
 
 func parseRSAPublicKeyPEM(block []byte) (*rsa.PublicKey, error) {
