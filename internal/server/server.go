@@ -3,15 +3,18 @@
 package server
 
 import (
+	"compress/gzip"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/klauspost/compress/zstd"
 
 	"rwnode-singbox/internal/payload"
 )
@@ -31,6 +34,7 @@ func (f *ServerFactory) ListenAndServe(addr string) error {
 	if f.Logger != nil {
 		next = f.logWrap(f.Mux)
 	}
+	next = f.decompress(next)
 	handler := f.jwtWrap(next)
 
 	server := &http.Server{
@@ -64,6 +68,46 @@ func (f *ServerFactory) logWrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.Logger.Debug("http request", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
 		next.ServeHTTP(w, r)
+	})
+}
+
+// decompress transparently decodes compressed request bodies based on the
+// Content-Encoding header. The Remnawave panel sends bodies zstd-compressed
+// (Node.js side uses body-parser-with-zstd), and without this the JSON decode
+// sees raw zstd bytes (first byte 0x28 = '(').
+func (f *ServerFactory) decompress(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding")))
+		if enc == "" || enc == "identity" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		var reader io.ReadCloser
+		var err error
+		switch enc {
+		case "zstd":
+			zr, e := zstd.NewReader(r.Body)
+			if e == nil {
+				reader = zr.IOReadCloser()
+			} else {
+				err = e
+			}
+		case "gzip":
+			reader, err = gzip.NewReader(r.Body)
+		default:
+			// deflate/br etc.: unsupported; pass through (let handler fail loudly
+			// rather than silently pretending identity).
+			next.ServeHTTP(w, r)
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{"error": "unsupported content-encoding: " + enc})
+			return
+		}
+		r.Body = reader
+		next.ServeHTTP(w, r)
+		_ = reader.Close()
 	})
 }
 
