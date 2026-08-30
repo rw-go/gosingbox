@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"rwnode-singbox/internal/app"
-	"rwnode-singbox/internal/singbox"
-	"rwnode-singbox/internal/state"
+	"github.com/rwsbnode/gosingbox/internal/app"
+	"github.com/rwsbnode/gosingbox/internal/singbox"
+	"github.com/rwsbnode/gosingbox/internal/state"
 )
 
 // TestSystemStatsReturnsOfficialErrorWhenDataPlaneDown guards the panel
@@ -21,7 +21,7 @@ import (
 // and never self-heals.
 func TestSystemStatsReturnsOfficialErrorWhenDataPlaneDown(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := app.New(logger, singbox.NewProcess(singbox.Options{}), state.New(), 5000)
+	a := app.New(logger, singbox.NewEngine(singbox.Options{}), state.New(), 5000)
 	s := NewStats(a, logger)
 
 	req := httptest.NewRequest(http.MethodGet, "/node/stats/get-system-stats", nil)

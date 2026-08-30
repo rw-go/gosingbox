@@ -29,6 +29,10 @@ type Config struct {
 	SingboxDrainMs    int
 	SingboxListen     string
 	SingboxGeoDir     string
+
+	// AsnIndexPath points to an asn-prefixes.json file (remnawave/asn-index
+	// JSON asset). When empty the ASN shared-list resolver stays disabled.
+	AsnIndexPath string
 }
 
 func envOr(key, def string) string {
@@ -65,6 +69,7 @@ func Load() (*Config, error) {
 		SingboxDrainMs:     envInt("SINGBOX_DRAIN_MS", 3000),
 		SingboxListen:      os.Getenv("SINGBOX_LISTEN"),
 		SingboxGeoDir:      os.Getenv("SINGBOX_GEO_DIR"),
+		AsnIndexPath:       os.Getenv("ASN_INDEX_PATH"),
 	}
 
 	if cfg.SecretKey == "" {

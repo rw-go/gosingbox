@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"rwnode-singbox/internal/app"
-	"rwnode-singbox/internal/singbox"
+	"github.com/rwsbnode/gosingbox/internal/app"
+	"github.com/rwsbnode/gosingbox/internal/singbox"
 )
 
 // Stats handles /node/stats/* routes.

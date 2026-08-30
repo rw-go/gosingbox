@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"sync"
 
-	"rwnode-singbox/internal/transpiler"
+	"github.com/rwsbnode/gosingbox/internal/transpiler"
 )
 
 // State is the thread-safe desired-state store.

@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"rwnode-singbox/internal/app"
+	"github.com/rwsbnode/gosingbox/internal/app"
 )
 
 // Internal handles the /internal/* routes (unauthenticated). These mirror the

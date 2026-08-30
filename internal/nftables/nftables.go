@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -104,6 +105,9 @@ func (m *Manager) CreateTable() error {
 		_ = m.run("add", "set", "inet", tableName, spec.name, fmt.Sprintf("{ type %s; flags timeout; }", spec.typ))
 	}
 
+	// Egress port set (inet_service, used by tcp/udp dport lookups).
+	_ = m.run("add", "set", "inet", tableName, setEgressPort, "{ type inet_service; flags interval; }")
+
 	// Ingress drop rules (input + forward) for torrent-blocker and ingress sets.
 	for _, set := range []string{setTorrent, setTorrent + "6"} {
 		_ = m.run("add", "rule", "inet", tableName, "input", ipLiteral(set)+" saddr @"+set+" drop")
@@ -117,6 +121,9 @@ func (m *Manager) CreateTable() error {
 	for _, set := range []string{setEgress, setEgress6} {
 		_ = m.run("add", "rule", "inet", tableName, "output", ipLiteral(set)+" daddr @"+set+" drop")
 	}
+	// Egress port drop rules (tcp + udp dport).
+	_ = m.run("add", "rule", "inet", tableName, "output", "tcp dport @"+setEgressPort+" drop")
+	_ = m.run("add", "rule", "inet", tableName, "output", "udp dport @"+setEgressPort+" drop")
 	return nil
 }
 
@@ -187,6 +194,46 @@ func (m *Manager) AddIngressIPs(ips []string) error {
 		_ = m.run("add", "element", "inet", tableName, set, "{ "+ip+" }")
 	}
 	return nil
+}
+
+// AddEgressIPs adds IPs to the egress-filter set (used by plugin sync).
+func (m *Manager) AddEgressIPs(ips []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.available {
+		return fmt.Errorf("nft unavailable")
+	}
+	for _, ip := range ips {
+		set := setFor(ip, setEgress, setEgress6)
+		if set == "" {
+			continue
+		}
+		_ = m.run("add", "element", "inet", tableName, set, "{ "+ip+" }")
+	}
+	return nil
+}
+
+// AddEgressPorts adds ports to the egress-filter port set.
+func (m *Manager) AddEgressPorts(ports []int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.available {
+		return fmt.Errorf("nft unavailable")
+	}
+	if len(ports) == 0 {
+		return nil
+	}
+	elems := make([]string, 0, len(ports))
+	for _, p := range ports {
+		if p < 1 || p > 65535 {
+			continue
+		}
+		elems = append(elems, strconv.Itoa(p))
+	}
+	if len(elems) == 0 {
+		return nil
+	}
+	return m.run("add", "element", "inet", tableName, setEgressPort, "{ "+strings.Join(elems, ", ")+" }")
 }
 
 // setFor returns the v4 or v6 set name for an IP.

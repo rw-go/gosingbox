@@ -8,13 +8,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
-	"rwnode-singbox/internal/nftables"
-	"rwnode-singbox/internal/singbox"
-	"rwnode-singbox/internal/state"
-	"rwnode-singbox/internal/systemstats"
-	"rwnode-singbox/internal/transpiler"
+	"github.com/sagernet/sing-box/option"
+
+	"github.com/rwsbnode/gosingbox/internal/asn"
+	"github.com/rwsbnode/gosingbox/internal/nftables"
+	"github.com/rwsbnode/gosingbox/internal/singbox"
+	"github.com/rwsbnode/gosingbox/internal/state"
+	"github.com/rwsbnode/gosingbox/internal/systemstats"
+	"github.com/rwsbnode/gosingbox/internal/transpiler"
 )
 
 // NodeVersion is the reported node version (set via ldflags at build time).
@@ -26,10 +30,11 @@ var NodeVersion = "3.3.2"
 type App struct {
 	logger *slog.Logger
 	state  *state.State
-	proc   *singbox.Process
+	proc   *singbox.Engine
 	cfg    *singbox.Options
 	sys    *systemstats.Reader
 	nft    *nftables.Manager
+	asnIdx *asn.Index
 
 	debounceMs time.Duration
 
@@ -39,8 +44,8 @@ type App struct {
 	logLevel  string
 }
 
-// New creates an App around the given sing-box process.
-func New(logger *slog.Logger, proc *singbox.Process, st *state.State, debounceMs int) *App {
+// New creates an App around the given embedded sing-box engine.
+func New(logger *slog.Logger, proc *singbox.Engine, st *state.State, debounceMs int) *App {
 	nft := nftables.New()
 	if nft.Available() {
 		if err := nft.CreateTable(); err != nil {
@@ -106,14 +111,37 @@ func inboundTagsOf(cfg map[string]any) []string {
 	return tags
 }
 
-// UserChanged is called after user add/remove; schedules a debounced apply.
+// UserChanged is called after user add/remove; schedules a debounced user
+// hot-swap (no listener restart).
 func (a *App) UserChanged() {
-	a.logger.Info("user change; scheduling debounced apply")
+	a.logger.Info("user change; scheduling debounced hot-swap")
 	time.AfterFunc(a.debounceMs, func() {
-		if err := a.applyToSingbox(); err != nil {
-			a.logger.Error("debounced apply failed", "error", err)
+		if err := a.applyUserHotSwap(); err != nil {
+			a.logger.Error("hot-swap users failed; falling back to full apply", "error", err)
+			if err := a.applyToSingbox(); err != nil {
+				a.logger.Error("full apply fallback failed", "error", err)
+			}
 		}
 	})
+}
+
+// applyUserHotSwap pushes the current VLESS user set into the running inbound
+// via UpdatableInbound.UpdateUsers, avoiding a configuration rebuild/restart.
+func (a *App) applyUserHotSwap() error {
+	tags := a.state.InboundTags()
+	users := make([]option.VLESSUser, 0, len(a.state.VlessUsers()))
+	for _, u := range a.state.VlessUsers() {
+		users = append(users, option.VLESSUser{Name: u.Name, UUID: u.UUID, Flow: u.Flow})
+	}
+	n, err := a.proc.UpdateVLESSUsers(tags, users)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("no vless inbound updated")
+	}
+	a.logger.Info("vless users hot-swapped", "inbounds", n, "users", len(users))
+	return nil
 }
 
 // AddUser adds a VLESS user to desired state and schedules apply.
@@ -318,4 +346,135 @@ func (a *App) NftRecreateTables() bool {
 		return false
 	}
 	return true
+}
+
+// SetAsnIndex wires in an optional ASN index used to resolve "asList" shared
+// lists. May be nil (ASN resolution disabled).
+func (a *App) SetAsnIndex(idx *asn.Index) {
+	a.asnIdx = idx
+}
+
+// PluginSpec is the panel plugin config (NodePluginSchema).
+type PluginSpec struct {
+	SharedLists    []SharedList        `json:"sharedLists"`
+	IngressFilter  *IngressFilterSpec  `json:"ingressFilter"`
+	EgressFilter   *EgressFilterSpec   `json:"egressFilter"`
+	ConnectionDrop *ConnectionDropSpec `json:"connectionDrop"`
+	TorrentBlocker json.RawMessage     `json:"torrentBlocker"`
+	PreStart       json.RawMessage     `json:"preStart"`
+}
+
+// SharedList is one entry of plugin sharedLists (ipList or asList).
+type SharedList struct {
+	Type  string            `json:"type"`
+	Name  string            `json:"name"`
+	Items []json.RawMessage `json:"items"`
+}
+
+// IngressFilterSpec mirrors the ingressFilter plugin section.
+type IngressFilterSpec struct {
+	Enabled    bool     `json:"enabled"`
+	BlockedIPs []string `json:"blockedIps"`
+}
+
+// EgressFilterSpec mirrors the egressFilter plugin section.
+type EgressFilterSpec struct {
+	Enabled      bool     `json:"enabled"`
+	BlockedIPs   []string `json:"blockedIps"`
+	BlockedPorts []int    `json:"blockedPorts"`
+}
+
+// ConnectionDropSpec mirrors the connectionDrop plugin section.
+type ConnectionDropSpec struct {
+	Enabled      bool     `json:"enabled"`
+	WhitelistIPs []string `json:"whitelistIps"`
+}
+
+// SyncPlugins applies the resolved plugin filters to nftables. It rebuilds the
+// firewall table and then populates the ingress/egress IP (and egress port)
+// sets. Torrent detection and connection-drop are not implemented by the
+// sing-box data plane (documented gaps): torrent reports stay empty and
+// connection-drop whitelisting has no effect.
+func (a *App) SyncPlugins(p PluginSpec) bool {
+	sharedMap := a.resolveSharedLists(p.SharedLists)
+
+	if err := a.nft.CreateTable(); err != nil {
+		a.logger.Warn("plugin sync: recreate tables failed", "error", err)
+		return false
+	}
+
+	if p.IngressFilter != nil && p.IngressFilter.Enabled {
+		ips := a.resolveIpList(p.IngressFilter.BlockedIPs, sharedMap)
+		if err := a.nft.AddIngressIPs(ips); err != nil {
+			a.logger.Warn("plugin sync: ingress filter failed", "error", err)
+		}
+	}
+
+	if p.EgressFilter != nil && p.EgressFilter.Enabled {
+		ips := a.resolveIpList(p.EgressFilter.BlockedIPs, sharedMap)
+		if err := a.nft.AddEgressIPs(ips); err != nil {
+			a.logger.Warn("plugin sync: egress filter failed", "error", err)
+		}
+		if err := a.nft.AddEgressPorts(p.EgressFilter.BlockedPorts); err != nil {
+			a.logger.Warn("plugin sync: egress port filter failed", "error", err)
+		}
+	}
+
+	return true
+}
+
+// resolveSharedLists builds a name → prefixes/IPs map from the plugin's
+// sharedLists. ipList entries are passed through verbatim; asList entries are
+// resolved to IP prefixes via the ASN index.
+func (a *App) resolveSharedLists(lists []SharedList) map[string][]string {
+	sharedMap := map[string][]string{}
+	for _, l := range lists {
+		switch l.Type {
+		case "ipList":
+			var items []string
+			for _, it := range l.Items {
+				var s string
+				if json.Unmarshal(it, &s) == nil {
+					items = append(items, s)
+				}
+			}
+			sharedMap[l.Name] = items
+		case "asList":
+			if a.asnIdx == nil {
+				a.logger.Warn("ASN index unavailable; skipping asList", "name", l.Name)
+				continue
+			}
+			var prefixes []string
+			for _, it := range l.Items {
+				var asn int
+				if json.Unmarshal(it, &asn) != nil {
+					continue
+				}
+				p, ok := a.asnIdx.PrefixesFor(asn)
+				if !ok {
+					a.logger.Warn("ASN not found in index", "asn", asn)
+					continue
+				}
+				prefixes = append(prefixes, p...)
+			}
+			sharedMap[l.Name] = prefixes
+		default:
+			a.logger.Warn("unknown shared list type", "type", l.Type, "name", l.Name)
+		}
+	}
+	return sharedMap
+}
+
+// resolveIpList expands "ext:<name>" references against the shared map and
+// returns the resulting flat IP/CIDR list.
+func (a *App) resolveIpList(ips []string, sharedMap map[string][]string) []string {
+	var out []string
+	for _, ip := range ips {
+		if strings.HasPrefix(ip, "ext:") {
+			out = append(out, sharedMap[ip]...)
+			continue
+		}
+		out = append(out, ip)
+	}
+	return out
 }

@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"rwnode-singbox/internal/app"
-	"rwnode-singbox/internal/nftables"
+	"github.com/rwsbnode/gosingbox/internal/app"
+	"github.com/rwsbnode/gosingbox/internal/nftables"
 )
 
 // Plugin handles /node/plugin/* routes (sync, torrent-blocker collect,
@@ -35,23 +35,33 @@ func (p *Plugin) Router(mux *http.ServeMux) {
 }
 
 // sync accepts the plugin config push. The sing-box data plane has no plugin
-// engine, so we validate presence and acknowledge. Returns accepted=false only
-// when the request body is malformed or no active plugin state can be derived.
+// engine and no torrent detection; shared lists (IP/ASN) and the ingress/egress
+// filters are resolved and applied to nftables, while torrent-blocker reports
+// stay empty and connection-drop whitelisting has no effect.
 func (p *Plugin) sync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w)
 		return
 	}
 	var body struct {
-		Plugin any `json:"plugin"`
+		Plugin *struct {
+			Config app.PluginSpec `json:"config"`
+			UUID   string         `json:"uuid"`
+			Name   string         `json:"name"`
+		} `json:"plugin"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"accepted": false}})
 		return
 	}
-	// Acknowledges the sync unconditionally (matches Node's behavior where the
-	// config is parsed but the singleton node has no plugin state transitions).
-	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"accepted": true}})
+	if body.Plugin == nil {
+		// Empty plugin push: tear down the firewall table.
+		_ = p.app.NftRecreateTables()
+		writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"accepted": true}})
+		return
+	}
+	ok := p.app.SyncPlugins(body.Plugin.Config)
+	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"accepted": ok}})
 }
 
 // collectReports returns an empty report list (no torrent detection).

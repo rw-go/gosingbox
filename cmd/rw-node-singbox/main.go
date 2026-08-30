@@ -20,21 +20,20 @@ import (
 	"syscall"
 	"time"
 
-	"rwnode-singbox/internal/app"
-	"rwnode-singbox/internal/config"
-	"rwnode-singbox/internal/controller"
-	"rwnode-singbox/internal/payload"
-	"rwnode-singbox/internal/server"
-	"rwnode-singbox/internal/singbox"
-	"rwnode-singbox/internal/state"
-	"rwnode-singbox/internal/transpiler"
+	"github.com/rwsbnode/gosingbox/internal/app"
+	"github.com/rwsbnode/gosingbox/internal/asn"
+	"github.com/rwsbnode/gosingbox/internal/config"
+	"github.com/rwsbnode/gosingbox/internal/controller"
+	"github.com/rwsbnode/gosingbox/internal/payload"
+	"github.com/rwsbnode/gosingbox/internal/server"
+	"github.com/rwsbnode/gosingbox/internal/singbox"
+	"github.com/rwsbnode/gosingbox/internal/state"
+	"github.com/rwsbnode/gosingbox/internal/transpiler"
 )
 
 func main() {
 	serveMode := flag.Bool("serve", false, "run as full panel-facing HTTPS server")
 	configPath := flag.String("config", "", "panel xrayConfig JSON file (data-plane driver)")
-	binPath := flag.String("singbox-bin", "", "sing-box binary path (override env)")
-	confOut := flag.String("out", "", "generated sing-box config path (override env)")
 	restartAfter := flag.Duration("demo-restart", 0, "if >0, trigger a graceful restart after this delay (driver)")
 	flag.Parse()
 
@@ -46,19 +45,24 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: parseLogLevel(cfg.LogLevel)}))
 
-	proc := singbox.NewProcess(singbox.Options{
-		BinPath:   firstNonEmpty(*binPath, cfg.SingboxBinPath),
-		ConfPath:  firstNonEmpty(*confOut, cfg.SingboxConfigPath),
+	proc := singbox.NewEngine(singbox.Options{
 		StatsAddr: cfg.SingboxStatsAddr,
 		ClashAddr: cfg.SingboxClashAddr,
-		LogDir:    cfg.SingboxLogDir,
 		LogLevel:  cfg.SingboxLogLevel,
-		DrainMs:   time.Duration(cfg.SingboxDrainMs) * time.Millisecond,
 		Logger:    logger,
 	})
 
 	st := state.New()
 	application := app.New(logger, proc, st, cfg.SingboxDebounceMs)
+
+	if cfg.AsnIndexPath != "" {
+		if idx, err := asn.Load(cfg.AsnIndexPath); err != nil {
+			logger.Warn("asn index load failed", "path", cfg.AsnIndexPath, "error", err)
+		} else {
+			application.SetAsnIndex(idx)
+			logger.Info("asn index loaded", "path", cfg.AsnIndexPath)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -78,7 +82,7 @@ func main() {
 	application.Stop()
 }
 
-func runServer(logger *slog.Logger, cfg *config.Config, application *app.App, proc *singbox.Process) {
+func runServer(logger *slog.Logger, cfg *config.Config, application *app.App, proc *singbox.Engine) {
 	if cfg.SecretKey == "" {
 		logger.Error("SECRET_KEY is required in serve mode")
 		os.Exit(1)
@@ -111,7 +115,7 @@ func runServer(logger *slog.Logger, cfg *config.Config, application *app.App, pr
 	}()
 }
 
-func runDriver(logger *slog.Logger, cfg *config.Config, application *app.App, proc *singbox.Process, configPath string, restartAfter time.Duration) {
+func runDriver(logger *slog.Logger, cfg *config.Config, application *app.App, proc *singbox.Engine, configPath string, restartAfter time.Duration) {
 	if configPath == "" {
 		logger.Error("data-plane driver requires -config")
 		os.Exit(1)
@@ -186,15 +190,6 @@ func reportStats(logger *slog.Logger, addr string) {
 	for _, s := range stats {
 		logger.Info("counter", "name", s.Name, "value", s.Value)
 	}
-}
-
-func firstNonEmpty(s ...string) string {
-	for _, v := range s {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // parseLogLevel maps a LOG_LEVEL env string (debug/info/warn/error) to a

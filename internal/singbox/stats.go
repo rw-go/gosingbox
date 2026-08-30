@@ -101,41 +101,4 @@ func NewStatsClientForTest(addr string) (StatsClient, error) {
 	return c, nil
 }
 
-// Ping performs a lightweight health check via GetSysStats.
-func (p *Process) Ping(ctx context.Context) bool { return p.ping(ctx) }
-
-// QueryUserStats queries per-user traffic counters (patterns ["user>>>"]).
-func (p *Process) QueryUserStats(ctx context.Context, reset bool) ([]Counter, error) {
-	return p.Query(ctx, []string{"user>>>"}, reset)
-}
-
-// Query runs QueryStats with the given patterns.
-func (p *Process) Query(ctx context.Context, patterns []string, reset bool) ([]Counter, error) {
-	c, err := newStatsClient(p.statsAddr)
-	if err != nil {
-		return nil, err
-	}
-	defer c.Close()
-	return c.QueryStats(ctx, patterns, reset)
-}
-
-// Stats is a direct query helper without a running process reference.
-func (p *Process) Stats(ctx context.Context) (*SysStats, error) {
-	c, err := newStatsClient(p.statsAddr)
-	if err != nil {
-		return nil, err
-	}
-	defer c.Close()
-	return c.GetSysStats(ctx)
-}
-func (p *Process) ping(ctx context.Context) bool {
-	c, err := newStatsClient(p.statsAddr)
-	if err != nil {
-		return false
-	}
-	defer c.Close()
-	_, err = c.GetSysStats(ctx)
-	return err == nil
-}
-
 var _ = time.Second // keep import if unused in future edits

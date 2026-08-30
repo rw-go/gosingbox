@@ -1,0 +1,19 @@
+[Unit]
+Description=gosingbox (sing-box data plane)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Path to the self-contained package.
+WorkingDirectory=/opt/gosingbox
+ExecStart=/opt/gosingbox/bin/run.sh
+Restart=always
+RestartSec=5
+# Optional hardening.
+NoNewPrivileges=false
+# Memory limit hint (uncomment if using a systemd cgroup):
+# MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
