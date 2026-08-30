@@ -30,7 +30,7 @@ echo "==> [1/2] build gosingbox (sing-box embedded, static)"
     cd "$GOSN_DIR"
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
         -tags "with_clash_api,with_v2ray_api,with_utls,with_acme,with_quic" \
-        -ldflags "-s -w -X github.com/rwsbnode/gosingbox/internal/app.NodeVersion=${NODE_SEMVER} -X github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}" \
+        -ldflags "-s -w -X github.com/rwnode/rwnode-gosingbox/internal/app.NodeVersion=${NODE_SEMVER} -X github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}" \
         -o "$STAGE/$PKG_NAME/bin/gosingbox" ./cmd/rw-node-singbox
 )
 chmod +x "$STAGE/$PKG_NAME/bin/gosingbox"
@@ -38,7 +38,7 @@ chmod +x "$STAGE/$PKG_NAME/bin/gosingbox"
 # --- 2. Fetch geocheck binary (geo detection) ---
 echo "==> [2/2] fetch geocheck ${GEOCHECK_VERSION}"
 GEOCHECK_TGZ="geocheck_linux_${ARCH}.tar.gz"
-GEOCHECK_URL="https://github.com/rwsbnode/geocheck/releases/download/${GEOCHECK_VERSION}/${GEOCHECK_TGZ}"
+GEOCHECK_URL="https://github.com/rwnode/geocheck/releases/download/${GEOCHECK_VERSION}/${GEOCHECK_TGZ}"
 curl -fsSL -o "$OUT_DIR/$GEOCHECK_TGZ" "$GEOCHECK_URL"
 mkdir -p "$OUT_DIR/geocheck-extract"
 tar -xzf "$OUT_DIR/$GEOCHECK_TGZ" -C "$OUT_DIR/geocheck-extract" geocheck

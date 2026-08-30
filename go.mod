@@ -1,4 +1,4 @@
-module github.com/rwsbnode/gosingbox
+module github.com/rwnode/rwnode-gosingbox
 
 go 1.26.5
 
@@ -10,7 +10,7 @@ require (
 	google.golang.org/grpc v1.83.2
 )
 
-replace github.com/sagernet/sing-box => github.com/rwsbnode/sing-box-fork v1.13.20-updatable.1
+replace github.com/sagernet/sing-box => github.com/rwnode/sing-box-fork v1.13.20-updatable.1
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect

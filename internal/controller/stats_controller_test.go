@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/rwsbnode/gosingbox/internal/app"
-	"github.com/rwsbnode/gosingbox/internal/singbox"
-	"github.com/rwsbnode/gosingbox/internal/state"
+	"github.com/rwnode/rwnode-gosingbox/internal/app"
+	"github.com/rwnode/rwnode-gosingbox/internal/singbox"
+	"github.com/rwnode/rwnode-gosingbox/internal/state"
 )
 
 // TestSystemStatsReturnsOfficialErrorWhenDataPlaneDown guards the panel

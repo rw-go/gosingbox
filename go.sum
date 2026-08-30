@@ -140,8 +140,8 @@ github.com/prometheus-community/pro-bing v0.4.0 h1:YMbv+i08gQz97OZZBwLyvmmQEEzyf
 github.com/prometheus-community/pro-bing v0.4.0/go.mod h1:b7wRYZtCcPmt4Sz319BykUU241rWLe1VFXyiyWK/dH4=
 github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=
 github.com/quic-go/qpack v0.6.0/go.mod h1:lUpLKChi8njB4ty2bFLX2x4gzDqXwUpaO1DP9qMDZII=
-github.com/rwsbnode/sing-box-fork v1.13.20-updatable.1 h1:/XXy5ZKH1tTBnPyOjmcfD+L7LDCQYZKPKjSqdoIdK5s=
-github.com/rwsbnode/sing-box-fork v1.13.20-updatable.1/go.mod h1:QkfLSGwPZB5adT5zF6PL6bPKRBVkS4tCIVv/zbM9WHA=
+github.com/rwnode/sing-box-fork v1.13.20-updatable.1 h1:/XXy5ZKH1tTBnPyOjmcfD+L7LDCQYZKPKjSqdoIdK5s=
+github.com/rwnode/sing-box-fork v1.13.20-updatable.1/go.mod h1:QkfLSGwPZB5adT5zF6PL6bPKRBVkS4tCIVv/zbM9WHA=
 github.com/safchain/ethtool v0.3.0 h1:gimQJpsI6sc1yIqP/y8GYgiXn/NjgvpM0RNoWLVVmP0=
 github.com/safchain/ethtool v0.3.0/go.mod h1:SA9BwrgyAqNo7M+uaL6IYbxpm5wk3L7Mm6ocLW+CJUs=
 github.com/sagernet/bbolt v0.0.0-20231014093535-ea5cb2fe9f0a h1:+NkI2670SQpQWvkkD2QgdTuzQG263YZ+2emfpeyGqW0=

@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/rwsbnode/gosingbox/internal/app"
-	"github.com/rwsbnode/gosingbox/internal/transpiler"
+	"github.com/rwnode/rwnode-gosingbox/internal/app"
+	"github.com/rwnode/rwnode-gosingbox/internal/transpiler"
 )
 
 // Handler handles /node/handler/* routes. User add/remove mutate the desired

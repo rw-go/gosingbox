@@ -5,12 +5,12 @@
 # an OpenRC service that auto-starts on boot.
 #
 # Usage (as root on the Alpine target):
-#   wget -qO- https://raw.githubusercontent.com/rwsbnode/rwnode-gosingbox/main/scripts/install-alpine.sh | sh
+#   wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-alpine.sh | sh
 #   # 若缓存导致拿到旧版, 加版本参数强制新域名:
-#   wget -qO- https://raw.githubusercontent.com/rwsbnode/rwnode-gosingbox/main/scripts/install-alpine.sh | sh
+#   wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-alpine.sh | sh
 #
 # Optional overrides via env:
-#   GOSINGBOX_RELEASE_OWNER  GitHub owner          (default rwsbnode)
+#   GOSINGBOX_RELEASE_OWNER  GitHub owner          (default rwnode)
 #   GOSINGBOX_RELEASE_REPO   GitHub repo           (default rwnode-gosingbox)
 #   GOSINGBOX_RELEASE_TAG    release tag           (default latest)
 #   GOSINGBOX_VER            package version      (default 3.3.2-go)
@@ -27,7 +27,7 @@ if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-v" ]; then
     exit 0
 fi
 
-OWNER="${GOSINGBOX_RELEASE_OWNER:-rwsbnode}"
+OWNER="${GOSINGBOX_RELEASE_OWNER:-rwnode}"
 REPO="${GOSINGBOX_RELEASE_REPO:-rwnode-gosingbox}"
 TAG="${GOSINGBOX_RELEASE_TAG:-go-v3.3.2-go}"
 VER="${GOSINGBOX_VER:-3.3.2-go}"

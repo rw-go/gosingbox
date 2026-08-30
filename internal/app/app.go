@@ -13,12 +13,12 @@ import (
 
 	"github.com/sagernet/sing-box/option"
 
-	"github.com/rwsbnode/gosingbox/internal/asn"
-	"github.com/rwsbnode/gosingbox/internal/nftables"
-	"github.com/rwsbnode/gosingbox/internal/singbox"
-	"github.com/rwsbnode/gosingbox/internal/state"
-	"github.com/rwsbnode/gosingbox/internal/systemstats"
-	"github.com/rwsbnode/gosingbox/internal/transpiler"
+	"github.com/rwnode/rwnode-gosingbox/internal/asn"
+	"github.com/rwnode/rwnode-gosingbox/internal/nftables"
+	"github.com/rwnode/rwnode-gosingbox/internal/singbox"
+	"github.com/rwnode/rwnode-gosingbox/internal/state"
+	"github.com/rwnode/rwnode-gosingbox/internal/systemstats"
+	"github.com/rwnode/rwnode-gosingbox/internal/transpiler"
 )
 
 // NodeVersion is the reported node version (set via ldflags at build time).

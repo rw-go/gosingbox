@@ -16,7 +16,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/rwsbnode/gosingbox/internal/payload"
+	"github.com/rwnode/rwnode-gosingbox/internal/payload"
 )
 
 // ServerFactory wraps a net/http.ServeMux and panel payload, adding mTLS +

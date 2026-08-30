@@ -24,7 +24,7 @@
 ### 3. per-user 无感热插拔（无重启）—— 已实现
 - **现状**：用户增删已改为「debounce 5s → `UpdatableInbound.UpdateUsers()`」热插拔，
   不再重启监听器。sing-box 已由 spawn 子进程改为**内嵌库**（见 `internal/singbox/engine.go`），
-  依赖 fork `rwsbnode/sing-box-fork`（tag `v1.13.20-updatable.1`，含 `UpdatableInbound` 补丁）。
+  依赖 fork `rwnode/sing-box-fork`（tag `v1.13.20-updatable.1`，含 `UpdatableInbound` 补丁）。
 - **已知注意**：热插拔当前只覆盖 VLESS；Shadowsocks 2022 的用户变更会走全量 reload
   （`ApplyConfig`）。内嵌后 `UpdatableShadowsocksInbound` 补丁已就位，可按需接入。
 

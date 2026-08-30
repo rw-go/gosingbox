@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/rwsbnode/gosingbox/internal/app"
+	"github.com/rwnode/rwnode-gosingbox/internal/app"
 )
 
 // Xray handles /node/xray/* routes.

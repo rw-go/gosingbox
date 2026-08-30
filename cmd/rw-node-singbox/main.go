@@ -20,15 +20,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rwsbnode/gosingbox/internal/app"
-	"github.com/rwsbnode/gosingbox/internal/asn"
-	"github.com/rwsbnode/gosingbox/internal/config"
-	"github.com/rwsbnode/gosingbox/internal/controller"
-	"github.com/rwsbnode/gosingbox/internal/payload"
-	"github.com/rwsbnode/gosingbox/internal/server"
-	"github.com/rwsbnode/gosingbox/internal/singbox"
-	"github.com/rwsbnode/gosingbox/internal/state"
-	"github.com/rwsbnode/gosingbox/internal/transpiler"
+	"github.com/rwnode/rwnode-gosingbox/internal/app"
+	"github.com/rwnode/rwnode-gosingbox/internal/asn"
+	"github.com/rwnode/rwnode-gosingbox/internal/config"
+	"github.com/rwnode/rwnode-gosingbox/internal/controller"
+	"github.com/rwnode/rwnode-gosingbox/internal/payload"
+	"github.com/rwnode/rwnode-gosingbox/internal/server"
+	"github.com/rwnode/rwnode-gosingbox/internal/singbox"
+	"github.com/rwnode/rwnode-gosingbox/internal/state"
+	"github.com/rwnode/rwnode-gosingbox/internal/transpiler"
 )
 
 func main() {

@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/rwsbnode/gosingbox/internal/app"
-	"github.com/rwsbnode/gosingbox/internal/nftables"
+	"github.com/rwnode/rwnode-gosingbox/internal/app"
+	"github.com/rwnode/rwnode-gosingbox/internal/nftables"
 )
 
 // Plugin handles /node/plugin/* routes (sync, torrent-blocker collect,
