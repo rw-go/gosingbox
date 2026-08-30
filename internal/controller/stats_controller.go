@@ -144,10 +144,38 @@ func (s *Stats) combinedStats(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
-// UserIPList / UsersIPList / online-status are degraded to empty (sing-box
-// v2ray_api has no online-IP RPC), matching the Node.js behavior.
+// UserIPList returns the online source IPs for a single user, each with the
+// time it was last seen (newest connection start). Data comes from the
+// sing-box clash API /connections.
 func (s *Stats) userIPList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"ips": []any{}}})
+	var b struct {
+		UserID string `json:"userId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&b)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	users, err := s.app.OnlineUsers(ctx)
+	if err != nil {
+		s.log.Debug("user ip list: clash api unavailable", "error", err)
+		writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"ips": []any{}}})
+		return
+	}
+
+	ips := []any{}
+	for _, u := range users {
+		if u.UserID != b.UserID {
+			continue
+		}
+		for _, ip := range u.IPs {
+			ips = append(ips, map[string]any{
+				"ip":       ip.IP,
+				"lastSeen": ip.LastSeen.UTC().Format(time.RFC3339Nano),
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"ips": ips}})
 }
 
 func (s *Stats) usersIPList(w http.ResponseWriter, r *http.Request) {
@@ -155,11 +183,55 @@ func (s *Stats) usersIPList(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"users": []any{}}})
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	users, err := s.app.OnlineUsers(ctx)
+	if err != nil {
+		s.log.Debug("users ip list: clash api unavailable", "error", err)
+		writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"users": []any{}}})
+		return
+	}
+
+	out := []any{}
+	for _, u := range users {
+		ips := []any{}
+		for _, ip := range u.IPs {
+			ips = append(ips, map[string]any{
+				"ip":       ip.IP,
+				"lastSeen": ip.LastSeen.UTC().Format(time.RFC3339Nano),
+			})
+		}
+		out = append(out, map[string]any{"userId": u.UserID, "ips": ips})
+	}
+	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"users": out}})
 }
 
 func (s *Stats) userOnlineStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"isOnline": false}})
+	var b struct {
+		Username string `json:"username"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&b)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	users, err := s.app.OnlineUsers(ctx)
+	if err != nil {
+		s.log.Debug("user online status: clash api unavailable", "error", err)
+		writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"isOnline": false}})
+		return
+	}
+
+	isOnline := false
+	for _, u := range users {
+		if u.UserName == b.Username {
+			isOnline = true
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"isOnline": isOnline}})
 }
 
 func (s *Stats) geocheck(w http.ResponseWriter, r *http.Request) {

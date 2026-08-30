@@ -38,9 +38,10 @@ func errf(format string, a ...any) *Error {
 }
 
 // Transpile converts the panel xrayConfig JSON into a sing-box config.
-// statsListen and logLevel are wiring options; desiredUsers, when non-nil,
+// statsListen (v2ray_api) and clashListen (clash_api) are wiring options;
+// logLevel is the sing-box log verbosity; desiredUsers, when non-nil,
 // overrides the VLESS user list (used by the user-change pipeline).
-func Transpile(raw []byte, statsListen, logLevel string, desiredUsers []VlessUser) (*Result, error) {
+func Transpile(raw []byte, statsListen, clashListen, logLevel string, desiredUsers []VlessUser) (*Result, error) {
 	var cfg map[string]any
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return nil, errf("panel config is not valid JSON: %v", err)
@@ -123,6 +124,9 @@ func Transpile(raw []byte, statsListen, logLevel string, desiredUsers []VlessUse
 				"outbounds": outboundTags,
 				"users":     userNames(vlessUsers),
 			},
+		},
+		"clash_api": map[string]any{
+			"external_controller": clashListen,
 		},
 	}
 	if routing != nil && hasRemoteSets {

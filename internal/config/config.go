@@ -22,6 +22,7 @@ type Config struct {
 	SingboxBinPath    string
 	SingboxConfigPath string
 	SingboxStatsAddr  string
+	SingboxClashAddr  string
 	SingboxLogDir     string
 	SingboxLogLevel   string
 	SingboxDebounceMs int
@@ -57,6 +58,7 @@ func Load() (*Config, error) {
 		SingboxBinPath:     envOr("SINGBOX_BIN_PATH", "/usr/local/bin/sing-box"),
 		SingboxConfigPath:  envOr("SINGBOX_CONFIG_PATH", "/var/lib/rnode/singbox/config.json"),
 		SingboxStatsAddr:   envOr("SINGBOX_STATS_ADDRESS", "127.0.0.1:6450"),
+		SingboxClashAddr:   envOr("SINGBOX_CLASH_ADDRESS", "127.0.0.1:9090"),
 		SingboxLogDir:      envOr("SINGBOX_LOG_DIR", "/var/log/rnode"),
 		SingboxLogLevel:    envOr("SINGBOX_LOG_LEVEL", "warn"),
 		SingboxDebounceMs:  envInt("SINGBOX_DEBOUNCE_MS", 5000),

@@ -27,6 +27,7 @@ type Process struct {
 	binPath   string
 	confPath  string
 	statsAddr string
+	clashAddr string
 	logDir    string
 	logLevel  string
 	drainMs   time.Duration
@@ -54,6 +55,7 @@ type Options struct {
 	BinPath   string
 	ConfPath  string
 	StatsAddr string
+	ClashAddr string
 	LogDir    string
 	LogLevel  string
 	DrainMs   time.Duration
@@ -70,6 +72,9 @@ func NewProcess(opts Options) *Process {
 	}
 	if opts.StatsAddr == "" {
 		opts.StatsAddr = "127.0.0.1:6450"
+	}
+	if opts.ClashAddr == "" {
+		opts.ClashAddr = "127.0.0.1:9090"
 	}
 	if opts.LogDir == "" {
 		opts.LogDir = "/var/log/rnode"
@@ -88,6 +93,7 @@ func NewProcess(opts Options) *Process {
 		binPath:   opts.BinPath,
 		confPath:  opts.ConfPath,
 		statsAddr: opts.StatsAddr,
+		clashAddr: opts.ClashAddr,
 		logDir:    opts.LogDir,
 		logLevel:  opts.LogLevel,
 		drainMs:   opts.DrainMs,
@@ -97,6 +103,7 @@ func NewProcess(opts Options) *Process {
 func (p *Process) BinPath() string   { return p.binPath }
 func (p *Process) ConfPath() string  { return p.confPath }
 func (p *Process) StatsAddr() string { return p.statsAddr }
+func (p *Process) ClashAddr() string { return p.clashAddr }
 func (p *Process) LogLevel() string  { return p.logLevel }
 
 // IsRunning reports whether the child process is alive.

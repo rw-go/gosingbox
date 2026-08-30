@@ -50,6 +50,7 @@ func main() {
 		BinPath:   firstNonEmpty(*binPath, cfg.SingboxBinPath),
 		ConfPath:  firstNonEmpty(*confOut, cfg.SingboxConfigPath),
 		StatsAddr: cfg.SingboxStatsAddr,
+		ClashAddr: cfg.SingboxClashAddr,
 		LogDir:    cfg.SingboxLogDir,
 		LogLevel:  cfg.SingboxLogLevel,
 		DrainMs:   time.Duration(cfg.SingboxDrainMs) * time.Millisecond,
@@ -120,7 +121,7 @@ func runDriver(logger *slog.Logger, cfg *config.Config, application *app.App, pr
 		logger.Error("read panel config", "error", err)
 		os.Exit(1)
 	}
-	res, err := transpiler.Transpile(raw, cfg.SingboxStatsAddr, cfg.SingboxLogLevel, nil)
+	res, err := transpiler.Transpile(raw, cfg.SingboxStatsAddr, cfg.SingboxClashAddr, cfg.SingboxLogLevel, nil)
 	if err != nil {
 		logger.Error("transpile", "error", err)
 		os.Exit(1)

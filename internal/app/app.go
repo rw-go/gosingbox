@@ -35,6 +35,7 @@ type App struct {
 
 	// desired working config derived from the last panel push
 	statsAddr string
+	clashAddr string
 	logLevel  string
 }
 
@@ -58,6 +59,7 @@ func New(logger *slog.Logger, proc *singbox.Process, st *state.State, debounceMs
 		nft:        nft,
 		debounceMs: time.Duration(debounceMs) * time.Millisecond,
 		statsAddr:  proc.StatsAddr(),
+		clashAddr:  proc.ClashAddr(),
 		logLevel:   proc.LogLevel(),
 	}
 }
@@ -75,7 +77,7 @@ func (a *App) applyToSingbox() error {
 		return fmt.Errorf("no panel config available")
 	}
 
-	res, err := transpiler.Transpile(raw, a.statsAddr, a.logLevel, a.state.VlessUsers())
+	res, err := transpiler.Transpile(raw, a.statsAddr, a.clashAddr, a.logLevel, a.state.VlessUsers())
 	if err != nil {
 		return fmt.Errorf("transpile: %w", err)
 	}
@@ -158,6 +160,72 @@ func (a *App) QueryUserCounters(ctx context.Context, reset bool) ([]singbox.Coun
 // SysStats returns sing-box runtime stats.
 func (a *App) SysStats(ctx context.Context) (*singbox.SysStats, error) {
 	return a.proc.Stats(ctx)
+}
+
+// OnlineConnections returns the connections currently online, queried from the
+// sing-box clash API (/connections).
+func (a *App) OnlineConnections(ctx context.Context) ([]singbox.ClashConnection, error) {
+	return singbox.FetchOnlineConnections(ctx, a.clashAddr)
+}
+
+// UserNameToUUID maps a VLESS user name back to the panel userId (UUID).
+func (a *App) UserNameToUUID(name string) string {
+	for _, u := range a.state.VlessUsers() {
+		if u.Name == name {
+			return u.UUID
+		}
+	}
+	return ""
+}
+
+// OnlineIP is one source IP currently served for a user, with the time it was
+// last seen (the newest connection start time for that address).
+type OnlineIP struct {
+	IP       string
+	LastSeen time.Time
+}
+
+// OnlineUser aggregates the current online connections per user.
+type OnlineUser struct {
+	UserName string
+	UserID   string
+	IPs      []OnlineIP
+}
+
+// OnlineUsers groups the current online connections (from the sing-box clash
+// API /connections) by VLESS user name and resolves each to a panel userId.
+func (a *App) OnlineUsers(ctx context.Context) ([]OnlineUser, error) {
+	conns, err := singbox.FetchOnlineConnections(ctx, a.clashAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	byUser := map[string]map[string]time.Time{}
+	for _, c := range conns {
+		name := c.Metadata.User
+		ip := c.Metadata.SourceIP
+		if name == "" || ip == "" {
+			continue
+		}
+		ips := byUser[name]
+		if ips == nil {
+			ips = map[string]time.Time{}
+			byUser[name] = ips
+		}
+		if prev, ok := ips[ip]; !ok || c.Start.After(prev) {
+			ips[ip] = c.Start
+		}
+	}
+
+	out := make([]OnlineUser, 0, len(byUser))
+	for name, ips := range byUser {
+		u := OnlineUser{UserName: name, UserID: a.UserNameToUUID(name)}
+		for ip, ts := range ips {
+			u.IPs = append(u.IPs, OnlineIP{IP: ip, LastSeen: ts})
+		}
+		out = append(out, u)
+	}
+	return out, nil
 }
 
 // SystemInfo returns node system info/stats for panel responses.
