@@ -1,9 +1,12 @@
 package controller
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/rwnode/rwnode-gosingbox/internal/app"
 	"github.com/rwnode/rwnode-gosingbox/internal/transpiler"
@@ -31,11 +34,12 @@ func (h *Handler) Router(mux *http.ServeMux) {
 }
 
 type vlessUserItem struct {
-	Type string `json:"type"`
-	Tag  string `json:"tag"`
-	User string `json:"username"`
-	UUID string `json:"uuid"`
-	Flow string `json:"flow"`
+	Type     string `json:"type"`
+	Tag      string `json:"tag"`
+	User     string `json:"username"`
+	UUID     string `json:"uuid"`
+	Flow     string `json:"flow"`
+	Password string `json:"password"`
 }
 
 type addUserRequest struct {
@@ -55,9 +59,10 @@ type addUsersRequest struct {
 			Flow string `json:"flow"`
 		} `json:"inboundData"`
 		UserData struct {
-			UserID    string `json:"userId"`
-			HashUUID  string `json:"hashUuid"`
-			VlessUUID string `json:"vlessUuid"`
+			UserID     string `json:"userId"`
+			HashUUID   string `json:"hashUuid"`
+			VlessUUID  string `json:"vlessUuid"`
+			SSPassword string `json:"ssPassword"`
 		} `json:"userData"`
 	} `json:"users"`
 }
@@ -83,14 +88,20 @@ func (h *Handler) addUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, item := range req.Data {
-		if item.Type != "vless" {
-			continue
+		switch item.Type {
+		case "vless":
+			uuid := firstNonEmpty(item.UUID, req.HashData.VlessUUID)
+			if uuid == "" {
+				continue
+			}
+			h.app.AddUser(transpiler.VlessUser{Name: firstNonEmpty(item.User, uuid), UUID: uuid, Flow: item.Flow})
+		case "shadowsocks22":
+			if item.Password == "" {
+				continue
+			}
+			name := firstNonEmpty(item.User, item.Password)
+			h.app.AddSsUser(transpiler.SsUser{Name: name, Password: item.Password})
 		}
-		uuid := firstNonEmpty(item.UUID, req.HashData.VlessUUID)
-		if uuid == "" {
-			continue
-		}
-		h.app.AddUser(transpiler.VlessUser{Name: firstNonEmpty(item.User, uuid), UUID: uuid, Flow: item.Flow})
 	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
 }
@@ -103,14 +114,25 @@ func (h *Handler) addUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, u := range req.Users {
 		for _, ib := range u.InboundData {
-			if ib.Type != "vless" {
-				continue
+			switch ib.Type {
+			case "vless":
+				if u.UserData.VlessUUID == "" {
+					continue
+				}
+				h.app.AddUser(transpiler.VlessUser{
+					Name: firstNonEmpty(u.UserData.UserID, u.UserData.VlessUUID),
+					UUID: u.UserData.VlessUUID,
+					Flow: ib.Flow,
+				})
+			case "shadowsocks22":
+				if u.UserData.SSPassword == "" {
+					continue
+				}
+				h.app.AddSsUser(transpiler.SsUser{
+					Name:     u.UserData.UserID,
+					Password: base64.StdEncoding.EncodeToString([]byte(u.UserData.SSPassword)),
+				})
 			}
-			h.app.AddUser(transpiler.VlessUser{
-				Name: firstNonEmpty(u.UserData.UserID, u.UserData.VlessUUID),
-				UUID: u.UserData.VlessUUID,
-				Flow: ib.Flow,
-			})
 		}
 	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
@@ -123,6 +145,7 @@ func (h *Handler) removeUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.app.RemoveUser(req.HashData.VlessUUID)
+	h.app.RemoveSsUser(req.Username)
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
 }
 
@@ -134,15 +157,48 @@ func (h *Handler) removeUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, u := range req.Users {
 		h.app.RemoveUser(u.HashUUID)
+		h.app.RemoveSsUser(u.UserID)
 	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
 }
 
 func (h *Handler) dropUsersConnections(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	var body struct {
+		UserIDs []string `json:"userIds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.UserIDs) == 0 {
+		writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": false, "error": nil}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if _, err := h.app.DropUsers(ctx, body.UserIDs); err != nil {
+		h.log.Debug("drop users connections: clash api unavailable", "error", err)
+	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
 }
 
 func (h *Handler) dropIPs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	var body struct {
+		IPs []string `json:"ips"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.IPs) == 0 {
+		writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": false, "error": nil}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if _, err := h.app.DropIPs(ctx, body.IPs); err != nil {
+		h.log.Debug("drop ips: clash api unavailable", "error", err)
+	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
 }
 

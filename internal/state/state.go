@@ -17,6 +17,7 @@ type State struct {
 	rawConfig   []byte
 	hasConfig   bool
 	vlessUsers  []transpiler.VlessUser // desired VLESS users
+	ssUsers     []transpiler.SsUser    // desired Shadowsocks 2022 users
 	inboundTags []string               // registered inbound tags
 }
 
@@ -34,8 +35,10 @@ func (s *State) SetRawConfig(raw []byte) {
 	var cfg map[string]any
 	if err := json.Unmarshal(raw, &cfg); err == nil {
 		s.vlessUsers = transpiler.UsersFromConfig(cfg)
+		s.ssUsers = transpiler.SsUsersFromConfig(cfg)
 	} else {
 		s.vlessUsers = nil
+		s.ssUsers = nil
 	}
 }
 
@@ -88,6 +91,41 @@ func (s *State) RemoveUser(uuid string) bool {
 	for i := range s.vlessUsers {
 		if s.vlessUsers[i].UUID == uuid {
 			s.vlessUsers = append(s.vlessUsers[:i], s.vlessUsers[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// SsUsers returns the current desired Shadowsocks 2022 user set.
+func (s *State) SsUsers() []transpiler.SsUser {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]transpiler.SsUser, len(s.ssUsers))
+	copy(out, s.ssUsers)
+	return out
+}
+
+// AddSsUser adds or updates a desired Shadowsocks 2022 user by name.
+func (s *State) AddSsUser(u transpiler.SsUser) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.ssUsers {
+		if s.ssUsers[i].Name == u.Name {
+			s.ssUsers[i] = u
+			return
+		}
+	}
+	s.ssUsers = append(s.ssUsers, u)
+}
+
+// RemoveSsUser removes a Shadowsocks 2022 user by name.
+func (s *State) RemoveSsUser(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.ssUsers {
+		if s.ssUsers[i].Name == name {
+			s.ssUsers = append(s.ssUsers[:i], s.ssUsers[i+1:]...)
 			return true
 		}
 	}

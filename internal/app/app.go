@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/option"
 
 	"github.com/rwnode/rwnode-gosingbox/internal/asn"
 	"github.com/rwnode/rwnode-gosingbox/internal/nftables"
+	"github.com/rwnode/rwnode-gosingbox/internal/prestart"
 	"github.com/rwnode/rwnode-gosingbox/internal/singbox"
 	"github.com/rwnode/rwnode-gosingbox/internal/state"
 	"github.com/rwnode/rwnode-gosingbox/internal/systemstats"
@@ -42,6 +44,10 @@ type App struct {
 	statsAddr string
 	clashAddr string
 	logLevel  string
+
+	// preStart cleanupSockets config from the last plugin sync.
+	preMu      sync.Mutex
+	preCleanup *CleanupSocketsSpec
 }
 
 // New creates an App around the given embedded sing-box engine.
@@ -77,12 +83,14 @@ func (a *App) Start(raw []byte) error {
 
 // applyToSingbox transpiles the current state and applies it to sing-box.
 func (a *App) applyToSingbox() error {
+	a.runPreCleanup()
+
 	raw := a.state.RawConfig()
 	if raw == nil {
 		return fmt.Errorf("no panel config available")
 	}
 
-	res, err := transpiler.Transpile(raw, a.statsAddr, a.clashAddr, a.logLevel, a.state.VlessUsers())
+	res, err := transpiler.Transpile(raw, a.statsAddr, a.clashAddr, a.logLevel, a.state.VlessUsers(), a.state.SsUsers())
 	if err != nil {
 		return fmt.Errorf("transpile: %w", err)
 	}
@@ -125,22 +133,36 @@ func (a *App) UserChanged() {
 	})
 }
 
-// applyUserHotSwap pushes the current VLESS user set into the running inbound
-// via UpdatableInbound.UpdateUsers, avoiding a configuration rebuild/restart.
+// applyUserHotSwap pushes the current VLESS and Shadowsocks 2022 user sets into
+// the running inbounds via UpdatableInbound.UpdateUsers / UpdateUsersByOptions,
+// avoiding a configuration rebuild/restart.
 func (a *App) applyUserHotSwap() error {
 	tags := a.state.InboundTags()
-	users := make([]option.VLESSUser, 0, len(a.state.VlessUsers()))
+
+	vless := make([]option.VLESSUser, 0, len(a.state.VlessUsers()))
 	for _, u := range a.state.VlessUsers() {
-		users = append(users, option.VLESSUser{Name: u.Name, UUID: u.UUID, Flow: u.Flow})
+		vless = append(vless, option.VLESSUser{Name: u.Name, UUID: u.UUID, Flow: u.Flow})
 	}
-	n, err := a.proc.UpdateVLESSUsers(tags, users)
+	nVless, err := a.proc.UpdateVLESSUsers(tags, vless)
 	if err != nil {
 		return err
 	}
-	if n == 0 {
-		return fmt.Errorf("no vless inbound updated")
+
+	ss := make([]option.ShadowsocksUser, 0, len(a.state.SsUsers()))
+	for _, u := range a.state.SsUsers() {
+		ss = append(ss, option.ShadowsocksUser{Name: u.Name, Password: u.Password})
 	}
-	a.logger.Info("vless users hot-swapped", "inbounds", n, "users", len(users))
+	nSs, err := a.proc.UpdateSSUsers(tags, ss)
+	if err != nil {
+		return err
+	}
+
+	if nVless == 0 && nSs == 0 {
+		return fmt.Errorf("no updatable inbound updated")
+	}
+	a.logger.Info("users hot-swapped",
+		"vlessInbounds", nVless, "vlessUsers", len(vless),
+		"ssInbounds", nSs, "ssUsers", len(ss))
 	return nil
 }
 
@@ -150,9 +172,24 @@ func (a *App) AddUser(u transpiler.VlessUser) {
 	a.UserChanged()
 }
 
+// AddSsUser adds a Shadowsocks 2022 user to desired state and schedules apply.
+func (a *App) AddSsUser(u transpiler.SsUser) {
+	a.state.AddSsUser(u)
+	a.UserChanged()
+}
+
 // RemoveUser removes a VLESS user by UUID and schedules apply.
 func (a *App) RemoveUser(uuid string) bool {
 	if !a.state.RemoveUser(uuid) {
+		return false
+	}
+	a.UserChanged()
+	return true
+}
+
+// RemoveSsUser removes a Shadowsocks 2022 user by name and schedules apply.
+func (a *App) RemoveSsUser(name string) bool {
+	if !a.state.RemoveSsUser(name) {
 		return false
 	}
 	a.UserChanged()
@@ -183,6 +220,47 @@ func (a *App) SysStats(ctx context.Context) (*singbox.SysStats, error) {
 // sing-box clash API (/connections).
 func (a *App) OnlineConnections(ctx context.Context) ([]singbox.ClashConnection, error) {
 	return singbox.FetchOnlineConnections(ctx, a.clashAddr)
+}
+
+// DropIPs terminates every active connection whose source IP is in the given
+// list, via the clash API DELETE /connections/:id endpoint. Returns the number
+// of connections closed.
+func (a *App) DropIPs(ctx context.Context, ips []string) (int, error) {
+	conns, err := a.OnlineConnections(ctx)
+	if err != nil {
+		return 0, err
+	}
+	set := make(map[string]struct{}, len(ips))
+	for _, ip := range ips {
+		set[ip] = struct{}{}
+	}
+	ids := make([]string, 0, len(conns))
+	for _, c := range conns {
+		if _, ok := set[c.Metadata.SourceIP]; ok {
+			ids = append(ids, c.ID)
+		}
+	}
+	return singbox.CloseConnections(ctx, a.clashAddr, ids)
+}
+
+// DropUsers terminates every active connection for the given users (panel
+// email) via the clash API. Returns the number of connections closed.
+func (a *App) DropUsers(ctx context.Context, userIds []string) (int, error) {
+	conns, err := a.OnlineConnections(ctx)
+	if err != nil {
+		return 0, err
+	}
+	set := make(map[string]struct{}, len(userIds))
+	for _, u := range userIds {
+		set[u] = struct{}{}
+	}
+	ids := make([]string, 0, len(conns))
+	for _, c := range conns {
+		if _, ok := set[c.Metadata.User]; ok {
+			ids = append(ids, c.ID)
+		}
+	}
+	return singbox.CloseConnections(ctx, a.clashAddr, ids)
 }
 
 // OnlineIP is one source IP currently served for a user, with the time it was
@@ -328,6 +406,27 @@ func (a *App) NftRecreateTables() bool {
 	return true
 }
 
+// setPreCleanup caches the preStart cleanupSockets config from plugin sync.
+func (a *App) setPreCleanup(spec *CleanupSocketsSpec) {
+	a.preMu.Lock()
+	a.preCleanup = spec
+	a.preMu.Unlock()
+}
+
+// runPreCleanup executes the preStart cleanupSockets stage before the sing-box
+// (re)start, mirroring the official node's restart sequence.
+func (a *App) runPreCleanup() {
+	a.preMu.Lock()
+	spec := a.preCleanup
+	a.preMu.Unlock()
+	if spec == nil || !spec.Enabled {
+		return
+	}
+	if removed := prestart.CleanupSockets(spec.Files); removed > 0 {
+		a.logger.Info("pre-start cleanup removed stale sockets", "count", removed)
+	}
+}
+
 // SetAsnIndex wires in an optional ASN index used to resolve "asList" shared
 // lists. May be nil (ASN resolution disabled).
 func (a *App) SetAsnIndex(idx *asn.Index) {
@@ -341,7 +440,19 @@ type PluginSpec struct {
 	EgressFilter   *EgressFilterSpec   `json:"egressFilter"`
 	ConnectionDrop *ConnectionDropSpec `json:"connectionDrop"`
 	TorrentBlocker json.RawMessage     `json:"torrentBlocker"`
-	PreStart       json.RawMessage     `json:"preStart"`
+	PreStart       *PreStartSpec       `json:"preStart"`
+}
+
+// PreStartSpec mirrors the preStart plugin section.
+type PreStartSpec struct {
+	Enabled        bool                `json:"enabled"`
+	CleanupSockets *CleanupSocketsSpec `json:"cleanupSockets"`
+}
+
+// CleanupSocketsSpec mirrors the preStart cleanupSockets config.
+type CleanupSocketsSpec struct {
+	Enabled bool     `json:"enabled"`
+	Files   []string `json:"files"`
 }
 
 // SharedList is one entry of plugin sharedLists (ipList or asList).
@@ -376,6 +487,12 @@ type ConnectionDropSpec struct {
 // sing-box data plane (documented gaps): torrent reports stay empty and
 // connection-drop whitelisting has no effect.
 func (a *App) SyncPlugins(p PluginSpec) bool {
+	var cleanup *CleanupSocketsSpec
+	if p.PreStart != nil && p.PreStart.Enabled {
+		cleanup = p.PreStart.CleanupSockets
+	}
+	a.setPreCleanup(cleanup)
+
 	sharedMap := a.resolveSharedLists(p.SharedLists)
 
 	if err := a.nft.CreateTable(); err != nil {

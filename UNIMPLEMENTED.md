@@ -13,23 +13,6 @@
   给 sing-box 打 DPI 补丁等价 webhook（维护随内核升级持续）。
 - **结论**：个人自用不启用；如需再按上述任一方案补。
 
-### 2. connection-drop 断连 —— 空实现
-- **现状**：`/node/handler/drop-users-connections`、`/node/handler/drop-ips` 恒返回
-  `{success:true}` 但不实际断开连接。
-- **原因**：官方靠 `sockdestroy`（需 `CAP_NET_ADMIN`，直接操作内核 socket）。
-- **可选路径**：clash_api `DELETE /connections/:id`（已内嵌启用 clash_api）；或接入
-  `sockdestroy` 同层能力。**低优先级**。
-
-### 3. preStart plugin（socket 清理）—— 未实现
-- **现状**：`plugin.sync` 中 `preStart`（`cleanupSockets`）字段被忽略。
-- **原因**：官方在节点启动前清理遗留 unix socket 文件；sing-box 内嵌模式下无此需求。
-- **结论**：可忽略，必要时按需补。
-
-### 4. Shadowsocks 2022 无感热插拔 —— 未接入
-- **现状**：用户无感热插拔仅覆盖 **VLESS**（`UpdatableInbound[option.VLESSUser]`）；
-  SS2022 用户变更走全量 reload（`ApplyConfig`，短暂断连）。
-- fork 中 `UpdatableShadowsocksInbound` 补丁已就位，可按需接入 `UpdateUsersByOptions`。
-
 ## 二、协议能力差异（数据面固有）
 
 sing-box 数据面仅支持 **VLESS + Reality + xtls-rprx-vision** 与
@@ -41,16 +24,17 @@ VMess / Trojan / 老式 SS / ws·grpc·xhttp 等传输在本项目**不支持**�
 | 控制器 | 端点 | 状态 |
 |---|---|---|
 | xray | start / stop / healthcheck | ✅ |
-| stats | get-users-stats | ✅ v2ray_api QueryStats 聚合 |
+| stats | get-users-stats | ✅ v2ray_api QueryStats 聚合（VLESS + SS2022） |
 | stats | get-system-stats | ✅（含 xrayInfo + system stats；xrayInfo 空时按官方返回 500） |
 | stats | get-inbound/outbound-stats | ✅ |
 | stats | get-all-inbounds/outbounds-stats | ✅ |
 | stats | get-combined-stats | ✅ |
-| stats | get-user-ip-list / get-users-ip-list | ✅ clash_api `/connections` |
+| stats | get-user-ip-list / get-users-ip-list | ✅ clash_api `/connections`（`userId`=email） |
 | stats | get-user-online-status | ✅ clash_api `/connections` |
 | stats | get-geocheck | ✅ 内置 geocheck 二进制 |
-| handler | add-user / add-users / remove-user / remove-users | ✅ 无感热插拔（debounce + `UpdateUsers`） |
-| plugin | sync（sharedLists + ingress/egress filter） | ✅（`ipList`/`asList` 解析，`ext:` 展开） |
+| handler | add-user / add-users / remove-user / remove-users | ✅ 无感热插拔（VLESS + SS2022，debounce + `UpdateUsers`） |
+| handler | drop-users-connections / drop-ips | ✅ clash_api `DELETE /connections/:id`（按 email / sourceIP 匹配） |
+| plugin | sync（sharedLists + ingress/egress filter + preStart） | ✅（`ipList`/`asList` 解析，`ext:` 展开，cleanupSockets） |
 | plugin | nftables block-ips / unblock-ips / recreate-tables | ✅ `nft` CLI |
 | internal | get-config | ✅ |
 
@@ -59,6 +43,12 @@ VMess / Trojan / 老式 SS / ws·grpc·xhttp 等传输在本项目**不支持**�
   需 env `ASN_INDEX_PATH` 指定，未配置时 `asList` 解析降级跳过。
 - **在线用户 / 单用户 IP / 最后活动时间**：clash_api `/connections`（fork `rwnode/sing-box-fork`
   内置 `user` 字段补丁，无需 build 时单独打 patch）。
+- **connection-drop（断连）**：`drop-ips` / `drop-users-connections` 通过 clash_api
+  `DELETE /connections/:id` 关闭匹配连接（等价官方 `sockdestroy` 效果，无需 CAP_NET_ADMIN）。
+- **preStart cleanupSockets**：`plugin.sync` 缓存 `preStart.cleanupSockets` 配置，在每次
+  sing-box (re)start 前清理遗留 unix socket 文件（glob 展开 + socket 类型校验）。
+- **SS2022 无感热插拔**：`UpdatableShadowsocksInbound.UpdateUsersByOptions`（fork 补丁），
+  用户增删不重启 listener；SS 用户流量并入 v2ray_api `stats.users` 统计。
 
 ## 四、契约同步记录
 

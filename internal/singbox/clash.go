@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -48,4 +49,32 @@ func FetchOnlineConnections(ctx context.Context, clashAddr string) ([]ClashConne
 		return nil, fmt.Errorf("clash api decode: %w", err)
 	}
 	return out.Connections, nil
+}
+
+// CloseConnections terminates the given active connections by id via the
+// sing-box clash API DELETE /connections/:id endpoint. Missing/unknown ids are
+// ignored (the connection may already be gone). Returns the number of ids that
+// were successfully closed.
+func CloseConnections(ctx context.Context, clashAddr string, ids []string) (int, error) {
+	client := &http.Client{Timeout: 3 * time.Second}
+	closed := 0
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, "http://"+clashAddr+"/connections/"+id, nil)
+		if err != nil {
+			return closed, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return closed, fmt.Errorf("clash api unavailable: %w", err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+			closed++
+		}
+	}
+	return closed, nil
 }

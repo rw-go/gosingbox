@@ -18,11 +18,18 @@ type VlessUser struct {
 	Flow string `json:"flow,omitempty"`
 }
 
+// SsUser is a sing-box Shadowsocks 2022 user entry.
+type SsUser struct {
+	Name     string `json:"name"`
+	Password string `json:"password"`
+}
+
 // Result is the transpile outcome.
 type Result struct {
 	Config     map[string]any
 	InboundTag string
 	Users      []VlessUser
+	SsUsers    []SsUser
 	ListenPort int
 }
 
@@ -40,8 +47,9 @@ func errf(format string, a ...any) *Error {
 // Transpile converts the panel xrayConfig JSON into a sing-box config.
 // statsListen (v2ray_api) and clashListen (clash_api) are wiring options;
 // logLevel is the sing-box log verbosity; desiredUsers, when non-nil,
-// overrides the VLESS user list (used by the user-change pipeline).
-func Transpile(raw []byte, statsListen, clashListen, logLevel string, desiredUsers []VlessUser) (*Result, error) {
+// overrides the VLESS user list (used by the user-change pipeline); the same
+// holds for desiredSsUsers and the Shadowsocks 2022 user list.
+func Transpile(raw []byte, statsListen, clashListen, logLevel string, desiredUsers []VlessUser, desiredSsUsers []SsUser) (*Result, error) {
 	var cfg map[string]any
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return nil, errf("panel config is not valid JSON: %v", err)
@@ -51,6 +59,8 @@ func Transpile(raw []byte, statsListen, clashListen, logLevel string, desiredUse
 
 	// --- Users ---
 	vlessUsers := buildVlessUsers(cfg, desiredUsers)
+	ssUsers := buildSsUsers(cfg, desiredSsUsers)
+	ssUseDesired := desiredSsUsers != nil
 
 	// --- Inbounds ---
 	var singBoxInbounds []any
@@ -81,7 +91,7 @@ func Transpile(raw []byte, statsListen, clashListen, logLevel string, desiredUse
 				}
 			}
 		case proto == "shadowsocks":
-			mapped := mapShadowsocksInbound(ib)
+			mapped := mapShadowsocksInbound(ib, ssUsers, ssUseDesired)
 			if mapped != nil {
 				singBoxInbounds = append(singBoxInbounds, mapped)
 				if tag, ok := mapped["tag"].(string); ok {
@@ -122,7 +132,7 @@ func Transpile(raw []byte, statsListen, clashListen, logLevel string, desiredUse
 				"enabled":   true,
 				"inbounds":  inboundTags,
 				"outbounds": outboundTags,
-				"users":     userNames(vlessUsers),
+				"users":     statUserNames(vlessUsers, ssUsers),
 			},
 		},
 		"clash_api": map[string]any{
@@ -153,6 +163,7 @@ func Transpile(raw []byte, statsListen, clashListen, logLevel string, desiredUse
 		Config:     config,
 		InboundTag: primaryTag,
 		Users:      vlessUsers,
+		SsUsers:    ssUsers,
 		ListenPort: primaryPort,
 	}, nil
 }
@@ -160,6 +171,17 @@ func Transpile(raw []byte, statsListen, clashListen, logLevel string, desiredUse
 func userNames(users []VlessUser) []string {
 	var out []string
 	for _, u := range users {
+		out = append(out, u.Name)
+	}
+	return out
+}
+
+// statUserNames returns the unified user email list (VLESS + Shadowsocks 2022)
+// tracked by the v2ray_api stats service.
+func statUserNames(vless []VlessUser, ss []SsUser) []string {
+	out := make([]string, 0, len(vless)+len(ss))
+	out = append(out, userNames(vless)...)
+	for _, u := range ss {
 		out = append(out, u.Name)
 	}
 	return out
@@ -199,6 +221,12 @@ func toStringArray(v any) []string { return asStrArr(v) }
 // the state store when a full config is pushed).
 func UsersFromConfig(cfg map[string]any) []VlessUser {
 	return buildVlessUsers(cfg, nil)
+}
+
+// SsUsersFromConfig extracts the Shadowsocks 2022 user list from a panel
+// config (used by the state store when a full config is pushed).
+func SsUsersFromConfig(cfg map[string]any) []SsUser {
+	return buildSsUsers(cfg, nil)
 }
 
 // NormalizeFlow defaults an empty VLESS flow to xtls-rprx-vision.
@@ -254,6 +282,53 @@ func buildVlessUsers(cfg map[string]any, desired []VlessUser) []VlessUser {
 	out := make([]VlessUser, 0, len(order))
 	for _, id := range order {
 		out = append(out, seen[id])
+	}
+	return out
+}
+
+// buildSsUsers collects Shadowsocks 2022 users from the config's shadowsocks
+// inbounds, or returns the desired set when non-nil.
+func buildSsUsers(cfg map[string]any, desired []SsUser) []SsUser {
+	if desired != nil {
+		out := make([]SsUser, len(desired))
+		copy(out, desired)
+		return out
+	}
+
+	seen := map[string]SsUser{}
+	var order []string
+	for _, ibAny := range asArr(cfg["inbounds"]) {
+		ib, ok := ibAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if ib["protocol"] != "shadowsocks" {
+			continue
+		}
+		settings, _ := ib["settings"].(map[string]any)
+		for _, cAny := range asArr(settings["clients"]) {
+			c, ok := cAny.(map[string]any)
+			if !ok {
+				continue
+			}
+			pwd, _ := c["password"].(string)
+			if pwd == "" {
+				continue
+			}
+			name, _ := c["email"].(string)
+			if name == "" {
+				name = pwd
+			}
+			if _, exists := seen[name]; !exists {
+				order = append(order, name)
+			}
+			seen[name] = SsUser{Name: name, Password: pwd}
+		}
+	}
+
+	out := make([]SsUser, 0, len(order))
+	for _, name := range order {
+		out = append(out, seen[name])
 	}
 	return out
 }
@@ -333,8 +408,9 @@ func parseDest(dest, fallbackServer string) (string, int) {
 }
 
 // mapShadowsocksInbound maps an Xray SS inbound to sing-box, single-password
-// or multi-user (clients).
-func mapShadowsocksInbound(ib map[string]any) map[string]any {
+// or multi-user (clients). When useDesired is true, ssUsers is authoritative
+// (multi-user, may be empty meaning "no users").
+func mapShadowsocksInbound(ib map[string]any, ssUsers []SsUser, useDesired bool) map[string]any {
 	settings, _ := ib["settings"].(map[string]any)
 	method, _ := settings["method"].(string)
 	if method == "" {
@@ -371,6 +447,19 @@ func mapShadowsocksInbound(ib map[string]any) map[string]any {
 	}
 	if len(networks) > 0 {
 		base["network"] = networks
+	}
+
+	if useDesired {
+		var users []any
+		for _, u := range ssUsers {
+			users = append(users, map[string]any{"name": u.Name, "password": u.Password})
+		}
+		if password == "" {
+			return nil // shared PSK mandatory for sing-box multi-user SS2022
+		}
+		base["password"] = password
+		base["users"] = users
+		return base
 	}
 
 	if len(clients) > 0 {

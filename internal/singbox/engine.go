@@ -172,6 +172,36 @@ func (e *Engine) UpdateVLESSUsers(tags []string, users []option.VLESSUser) (int,
 	return updated, nil
 }
 
+// UpdateSSUsers hot-swaps the Shadowsocks 2022 user set (with passwords) on the
+// given inbound tags without restarting listeners. Returns the number of
+// updated inbounds.
+func (e *Engine) UpdateSSUsers(tags []string, users []option.ShadowsocksUser) (int, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.box == nil || !e.online {
+		return 0, fmt.Errorf("not running")
+	}
+	im := service.FromContext[adapter.InboundManager](e.ctx)
+	if im == nil {
+		return 0, fmt.Errorf("inbound manager unavailable")
+	}
+
+	updated := 0
+	for _, tag := range tags {
+		ib, ok := im.Get(tag)
+		if !ok {
+			continue
+		}
+		if u, ok := ib.(adapter.UpdatableShadowsocksInbound); ok {
+			if err := u.UpdateUsersByOptions(users); err != nil {
+				return updated, fmt.Errorf("update ss users on %q: %w", tag, err)
+			}
+			updated++
+		}
+	}
+	return updated, nil
+}
+
 func (e *Engine) stopLocked() {
 	if e.box == nil {
 		return

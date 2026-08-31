@@ -125,7 +125,7 @@ func runDriver(logger *slog.Logger, cfg *config.Config, application *app.App, pr
 		logger.Error("read panel config", "error", err)
 		os.Exit(1)
 	}
-	res, err := transpiler.Transpile(raw, cfg.SingboxStatsAddr, cfg.SingboxClashAddr, cfg.SingboxLogLevel, nil)
+	res, err := transpiler.Transpile(raw, cfg.SingboxStatsAddr, cfg.SingboxClashAddr, cfg.SingboxLogLevel, nil, nil)
 	if err != nil {
 		logger.Error("transpile", "error", err)
 		os.Exit(1)
