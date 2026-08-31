@@ -19,20 +19,20 @@
 # Optional overrides via env:
 #   GOSINGBOX_RELEASE_OWNER  GitHub owner        (default rwnode)
 #   GOSINGBOX_RELEASE_REPO   GitHub repo         (default rwnode-gosingbox)
-#   GOSINGBOX_RELEASE_TAG    release tag         (default go-v3.4.0-go)
-#   GOSINGBOX_VER            package version     (default 3.4.0-go)
+#   GOSINGBOX_RELEASE_TAG    release tag         (default go-v3.4.1-go)
+#   GOSINGBOX_VER            package version     (default 3.4.1-go)
 #   GOSINGBOX_INSTALL_DIR    install dir         (default /opt/gosingbox)
 #   NODE_PORT / SECRET_KEY / LOG_LEVEL
 set -eu
 
 # Installer version. Bump the patch number on EVERY change to this script so
 # users can tell the CDN stopped serving the latest revision. (See AGENTS.md.)
-INSTALLER_VERSION="3.4.0.1"
+INSTALLER_VERSION="3.4.1.0"
 
 OWNER="${GOSINGBOX_RELEASE_OWNER:-rwnode}"
 REPO="${GOSINGBOX_RELEASE_REPO:-rwnode-gosingbox}"
-TAG="${GOSINGBOX_RELEASE_TAG:-go-v3.4.0-go}"
-VER="${GOSINGBOX_VER:-3.4.0-go}"
+TAG="${GOSINGBOX_RELEASE_TAG:-go-v3.4.1-go}"
+VER="${GOSINGBOX_VER:-3.4.1-go}"
 ARCH="amd64"
 INSTALL_DIR="${GOSINGBOX_INSTALL_DIR:-/opt/gosingbox}"
 SERVICE="gosingbox"

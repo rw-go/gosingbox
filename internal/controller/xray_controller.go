@@ -1,5 +1,5 @@
 // Package controller implements the panel-facing HTTP endpoint handlers,
-// mirroring the Node.js v3.3.2 controllers where applicable.
+// mirroring the Node.js v3.4.1 controllers where applicable.
 package controller
 
 import (

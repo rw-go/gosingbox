@@ -1,7 +1,7 @@
 # 未实现 / 降级功能
 
 本文档记录 `gosingbox`（Go 版节点，sing-box 数据面）相对官方 remnawave/node 的功能
-差距与暂不实现项。对照基准为**官方 3.4.0** 的 Panel-facing contract。
+差距与暂不实现项。对照基准为**官方 3.4.1** 的 Panel-facing contract。
 
 ## 一、未实现的官方功能
 
@@ -19,7 +19,7 @@ sing-box 数据面仅支持 **VLESS + Reality + xtls-rprx-vision** 与
 **Shadowsocks 2022 (`2022-blake3-aes-256-gcm`)**。官方 Xray 数据面额外支持的
 VMess / Trojan / 老式 SS / ws·grpc·xhttp 等传输在本项目**不支持**（by design）。
 
-## 三、已实现的官方功能（对照 3.4.0）
+## 三、已实现的官方功能（对照 3.4.1）
 
 | 控制器 | 端点 | 状态 |
 |---|---|---|
@@ -54,3 +54,5 @@ VMess / Trojan / 老式 SS / ws·grpc·xhttp 等传输在本项目**不支持**�
 
 - 已对齐官方 **3.4.0**：移除 `get-inbound-users` / `get-inbound-users-count` 两个端点
   （官方 3.4.0 从 handler contract 删除）。
+- 已对齐官方 **3.4.1**：`add-user` 在 `prevVlessUuid` 存在（UUID 轮换）时，移除旧用户并
+  通过 clash_api 断开其现网连接（官方 3.4.1 addUser 的 `DropConnectionsEvent` 逻辑）。

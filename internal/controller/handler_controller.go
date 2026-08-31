@@ -87,6 +87,19 @@ func (h *Handler) addUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"success": false, "error": err.Error()}})
 		return
 	}
+
+	var username string
+	if len(req.Data) > 0 {
+		username = req.Data[0].User
+	}
+
+	// On UUID rotation (prevVlessUuid present) the panel swaps a user's VLESS
+	// key: drop the old user and (below) terminate its live connections so the
+	// client re-auths with the new key. Mirrors official node 3.4.1 addUser.
+	if req.HashData.PrevVlessUID != "" {
+		h.app.RemoveUser(req.HashData.PrevVlessUID)
+	}
+
 	for _, item := range req.Data {
 		switch item.Type {
 		case "vless":
@@ -103,6 +116,15 @@ func (h *Handler) addUser(w http.ResponseWriter, r *http.Request) {
 			h.app.AddSsUser(transpiler.SsUser{Name: name, Password: item.Password})
 		}
 	}
+
+	if req.HashData.PrevVlessUID != "" && username != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := h.app.DropUsers(ctx, []string{username}); err != nil {
+			h.log.Debug("add-user: drop previous connections failed", "error", err)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
 }
 

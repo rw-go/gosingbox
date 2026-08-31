@@ -19,7 +19,7 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 - 一键安装/升级/卸载（Alpine / OpenRC）。
 - geo 检测（内置 geocheck）、ASN shared lists、nftables ingress/egress filter。
 
-## 一键安装（Alpine / OpenRC）
+## 一键安装（OpenRC / systemd）
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox.sh | sh
@@ -32,8 +32,9 @@ wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts
 wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox.sh | sh -s -- --version
 ```
 
-脚本会询问 `NODE_PORT`（默认 2222）与 `SECRET_KEY`（面板下发），并安装
-`curl nftables`、下载解包二进制、写 env、生成 OpenRC 服务并自启。
+脚本会询问 `NODE_PORT`（默认 2222）与 `SECRET_KEY`（面板下发），自动检测 init
+系统（OpenRC / systemd）、安装 `curl nftables`、下载解包二进制、写 env、生成服务并自启。
+Alpine 用 OpenRC，Debian/Ubuntu/Arch 等用 systemd。
 
 ## 构建
 
