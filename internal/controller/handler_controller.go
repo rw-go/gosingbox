@@ -26,8 +26,6 @@ func (h *Handler) Router(mux *http.ServeMux) {
 	mux.HandleFunc("/node/handler/add-users", h.addUsers)
 	mux.HandleFunc("/node/handler/remove-user", h.removeUser)
 	mux.HandleFunc("/node/handler/remove-users", h.removeUsers)
-	mux.HandleFunc("/node/handler/get-inbound-users", h.getInboundUsers)
-	mux.HandleFunc("/node/handler/get-inbound-users-count", h.getInboundUsersCount)
 	mux.HandleFunc("/node/handler/drop-users-connections", h.dropUsersConnections)
 	mux.HandleFunc("/node/handler/drop-ips", h.dropIPs)
 }
@@ -138,20 +136,6 @@ func (h *Handler) removeUsers(w http.ResponseWriter, r *http.Request) {
 		h.app.RemoveUser(u.HashUUID)
 	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
-}
-
-func (h *Handler) getInboundUsersCount(w http.ResponseWriter, r *http.Request) {
-	users := h.app.CurrentUsers()
-	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"count": len(users)}})
-}
-
-func (h *Handler) getInboundUsers(w http.ResponseWriter, r *http.Request) {
-	users := h.app.CurrentUsers()
-	list := []any{}
-	for _, u := range users {
-		list = append(list, map[string]any{"username": u, "level": 0})
-	}
-	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"users": list}})
 }
 
 func (h *Handler) dropUsersConnections(w http.ResponseWriter, r *http.Request) {

@@ -159,17 +159,6 @@ func (a *App) RemoveUser(uuid string) bool {
 	return true
 }
 
-// CurrentUsers returns the desired VLESS user names (for the handler count/list
-// endpoints).
-func (a *App) CurrentUsers() []string {
-	users := a.state.VlessUsers()
-	out := make([]string, 0, len(users))
-	for _, u := range users {
-		out = append(out, u.Name)
-	}
-	return out
-}
-
 // Stop shuts down the sing-box process.
 func (a *App) Stop() {
 	a.proc.Shutdown()
