@@ -18,14 +18,14 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 ## 一键安装（Alpine / OpenRC）
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-alpine.sh | sh
+wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox.sh | sh
 ```
 
 或带参数：
 
 ```bash
 # 查看安装器版本（判断 CDN 是否缓存旧版）
-wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-alpine.sh | sh -s -- --version
+wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox.sh | sh -s -- --version
 ```
 
 脚本会询问 `NODE_PORT`（默认 2222）与 `SECRET_KEY`（面板下发），并安装
@@ -34,7 +34,7 @@ wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts
 ## 构建
 
 ```bash
-./scripts/build-go-standalone.sh
+./scripts/build-gosingbox.sh
 # 产物 dist-go/gosingbox-<ver>-linux-amd64.tar.gz
 ```
 
