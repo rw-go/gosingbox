@@ -185,16 +185,6 @@ func (a *App) OnlineConnections(ctx context.Context) ([]singbox.ClashConnection,
 	return singbox.FetchOnlineConnections(ctx, a.clashAddr)
 }
 
-// UserNameToUUID maps a VLESS user name back to the panel userId (UUID).
-func (a *App) UserNameToUUID(name string) string {
-	for _, u := range a.state.VlessUsers() {
-		if u.Name == name {
-			return u.UUID
-		}
-	}
-	return ""
-}
-
 // OnlineIP is one source IP currently served for a user, with the time it was
 // last seen (the newest connection start time for that address).
 type OnlineIP struct {
@@ -202,10 +192,11 @@ type OnlineIP struct {
 	LastSeen time.Time
 }
 
-// OnlineUser aggregates the current online connections per user.
+// OnlineUser aggregates the current online connections per user. UserName is
+// the panel user identifier (email), which is what the panel contract calls
+// "userId" in the stats endpoints (matching Xray's user>>>{email}>>>online).
 type OnlineUser struct {
 	UserName string
-	UserID   string
 	IPs      []OnlineIP
 }
 
@@ -236,7 +227,7 @@ func (a *App) OnlineUsers(ctx context.Context) ([]OnlineUser, error) {
 
 	out := make([]OnlineUser, 0, len(byUser))
 	for name, ips := range byUser {
-		u := OnlineUser{UserName: name, UserID: a.UserNameToUUID(name)}
+		u := OnlineUser{UserName: name}
 		for ip, ts := range ips {
 			u.IPs = append(u.IPs, OnlineIP{IP: ip, LastSeen: ts})
 		}

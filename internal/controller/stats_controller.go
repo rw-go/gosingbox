@@ -165,7 +165,7 @@ func (s *Stats) userIPList(w http.ResponseWriter, r *http.Request) {
 
 	ips := []any{}
 	for _, u := range users {
-		if u.UserID != b.UserID {
+		if u.UserName != b.UserID {
 			continue
 		}
 		for _, ip := range u.IPs {
@@ -203,7 +203,7 @@ func (s *Stats) usersIPList(w http.ResponseWriter, r *http.Request) {
 				"lastSeen": ip.LastSeen.UTC().Format(time.RFC3339Nano),
 			})
 		}
-		out = append(out, map[string]any{"userId": u.UserID, "ips": ips})
+		out = append(out, map[string]any{"userId": u.UserName, "ips": ips})
 	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"users": out}})
 }
