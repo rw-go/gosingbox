@@ -76,6 +76,9 @@ func (r *wireQueryStatsResponse) unmarshal(data []byte) error {
 	r.Stat = nil
 	for len(data) > 0 {
 		tag, n := readVarint(data)
+		if n == 0 {
+			return errShortBuffer
+		}
 		data = data[n:]
 		fieldNum := int(tag >> 3)
 		wireType := int(tag & 7)
@@ -83,8 +86,11 @@ func (r *wireQueryStatsResponse) unmarshal(data []byte) error {
 		case 1:
 			// Stat (message)
 			l, m := readVarint(data)
+			if m == 0 || m > len(data) {
+				return errShortBuffer
+			}
 			data = data[m:]
-			if int(l) > len(data) {
+			if l > uint64(len(data)) {
 				return errShortBuffer
 			}
 			msgData := data[:l]
@@ -96,9 +102,11 @@ func (r *wireQueryStatsResponse) unmarshal(data []byte) error {
 			r.Stat = append(r.Stat, st)
 		default:
 			// skip field
-			if err := skipField(data, wireType); err != nil {
+			n, err := skipField(data, wireType)
+			if err != nil {
 				return err
 			}
+			data = data[n:]
 		}
 	}
 	return nil
@@ -107,27 +115,43 @@ func (r *wireQueryStatsResponse) unmarshal(data []byte) error {
 func (s *wireStat) unmarshal(data []byte) error {
 	for len(data) > 0 {
 		tag, n := readVarint(data)
+		if n == 0 {
+			return errShortBuffer
+		}
 		data = data[n:]
 		fieldNum := int(tag >> 3)
 		wireType := int(tag & 7)
 		switch fieldNum {
 		case 1:
+			if wireType != wireBytes {
+				return errShortBuffer
+			}
 			l, m := readVarint(data)
+			if m == 0 || m > len(data) {
+				return errShortBuffer
+			}
 			data = data[m:]
-			if int(l) > len(data) {
+			if l > uint64(len(data)) {
 				return errShortBuffer
 			}
 			s.Name = string(data[:l])
 			data = data[l:]
 		case 2:
+			if wireType != wireVarint {
+				return errShortBuffer
+			}
 			v, m := readVarint(data)
+			if m == 0 {
+				return errShortBuffer
+			}
 			data = data[m:]
-			_ = wireType
 			s.Value = int64(v)
 		default:
-			if err := skipField(data, wireType); err != nil {
+			n, err := skipField(data, wireType)
+			if err != nil {
 				return err
 			}
+			data = data[n:]
 		}
 	}
 	return nil
@@ -149,16 +173,24 @@ type wireGetSysStatsResponse struct {
 func (r *wireGetSysStatsResponse) unmarshal(data []byte) error {
 	for len(data) > 0 {
 		tag, n := readVarint(data)
+		if n == 0 {
+			return errShortBuffer
+		}
 		data = data[n:]
 		fieldNum := int(tag >> 3)
 		wireType := int(tag & 7)
 		if wireType != wireVarint {
-			if err := skipField(data, wireType); err != nil {
+			n, err := skipField(data, wireType)
+			if err != nil {
 				return err
 			}
+			data = data[n:]
 			continue
 		}
 		v, m := readVarint(data)
+		if m == 0 {
+			return errShortBuffer
+		}
 		data = data[m:]
 		switch fieldNum {
 		case 1:
@@ -268,8 +300,10 @@ func (rawCodec) Unmarshal(data []byte, v any) error {
 // --- protobuf wire helpers ---
 
 const (
-	wireVarint = 0
-	wireBytes  = 2
+	wireVarint  = 0
+	wireBytes   = 2
+	wireFixed64 = 1
+	wireFixed32 = 5
 )
 
 var errShortBuffer = errShort("short buffer")
@@ -292,6 +326,9 @@ func readVarint(data []byte) (uint64, int) {
 	var v uint64
 	var shift uint
 	for i, b := range data {
+		if i == 9 && b > 1 {
+			return 0, 0
+		}
 		v |= uint64(b&0x7f) << shift
 		if b < 0x80 {
 			return v, i + 1
@@ -301,24 +338,34 @@ func readVarint(data []byte) (uint64, int) {
 			break
 		}
 	}
-	return 0, len(data)
+	return 0, 0
 }
 
-func skipField(data []byte, wireType int) error {
+func skipField(data []byte, wireType int) (int, error) {
 	switch wireType {
 	case wireVarint:
 		_, n := readVarint(data)
 		if n == 0 {
-			return errShortBuffer
+			return 0, errShortBuffer
 		}
-		return nil
+		return n, nil
 	case wireBytes:
 		l, m := readVarint(data)
-		if m == 0 || int(l) > len(data)-m {
-			return errShortBuffer
+		if m == 0 || m > len(data) || l > uint64(len(data)-m) {
+			return 0, errShortBuffer
 		}
-		return nil
+		return m + int(l), nil
+	case wireFixed64:
+		if len(data) < 8 {
+			return 0, errShortBuffer
+		}
+		return 8, nil
+	case wireFixed32:
+		if len(data) < 4 {
+			return 0, errShortBuffer
+		}
+		return 4, nil
 	default:
-		return errShort("unsupported wire type")
+		return 0, errShort("unsupported wire type")
 	}
 }

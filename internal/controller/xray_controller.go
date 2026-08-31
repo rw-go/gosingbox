@@ -60,7 +60,7 @@ func (x *Xray) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := x.app.Start(req.XrayConfig); err != nil {
+	if err := x.app.StartWithForce(req.XrayConfig, req.Internals.ForceRestart); err != nil {
 		x.log.Error("start failed", "error", err)
 		x.writeStartResponse(w, false, err.Error())
 		return

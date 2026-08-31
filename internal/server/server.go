@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -19,48 +20,71 @@ import (
 	"github.com/rwnode/rwnode-gosingbox/internal/payload"
 )
 
+const maxRequestBodyBytes int64 = 64 << 20
+
 // ServerFactory wraps a net/http.ServeMux and panel payload, adding mTLS +
 // JWT middleware automatically.
 type ServerFactory struct {
-	Mux     *http.ServeMux
-	Payload *payload.Payload
-	Logger  *slog.Logger
+	Mux               *http.ServeMux
+	Payload           *payload.Payload
+	Logger            *slog.Logger
+	InternalRESTToken string
+	InternalOnly      bool
 }
 
 // ListenAndServe builds the full mTLS + JWT handler and starts listening.
 // If Payload is nil, the server runs without HTTPS (plain HTTP, not recommended).
 func (f *ServerFactory) ListenAndServe(addr string) error {
-	var next http.Handler = f.Mux
-	if f.Logger != nil {
-		next = f.logWrap(f.Mux)
+	return f.serve(f.Mux, addr, func(server *http.Server) error {
+		if f.Payload != nil {
+			cert, err := tls.X509KeyPair([]byte(f.Payload.NodeCertPEM), []byte(f.Payload.NodeKeyPEM))
+			if err != nil {
+				return err
+			}
+			caPool := x509.NewCertPool()
+			if !caPool.AppendCertsFromPEM([]byte(f.Payload.CACertPEM)) {
+				return errMsg("failed to parse CA cert")
+			}
+			server.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}, ClientCAs: caPool, ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS13}
+			return server.ListenAndServeTLS("", "")
+		}
+		return server.ListenAndServe()
+	})
+}
+
+// ListenAndServeUnix serves internal endpoints on an abstract Unix socket.
+// The token is passed as ?token=..., matching the official Node internal API.
+func (f *ServerFactory) ListenAndServeUnix(path string) error {
+	listener, err := net.Listen("unix", "\x00"+strings.TrimPrefix(path, "@"))
+	if err != nil {
+		return err
 	}
+	return f.serve(f.Mux, "unix:"+path, func(server *http.Server) error { return server.Serve(listener) })
+}
+
+func (f *ServerFactory) serve(mux *http.ServeMux, addr string, start func(*http.Server) error) error {
+	var next http.Handler = mux
+	if f.Logger != nil {
+		next = f.logWrap(mux)
+	}
+	next = f.limitBody(next)
 	next = f.decompress(next)
-	handler := f.jwtWrap(next)
+	handler := next
+	if f.InternalOnly {
+		handler = f.internalTokenWrap(next)
+	} else {
+		handler = f.jwtWrap(next)
+	}
 
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
-
-	if f.Payload != nil {
-		cert, err := tls.X509KeyPair([]byte(f.Payload.NodeCertPEM), []byte(f.Payload.NodeKeyPEM))
-		if err != nil {
-			return err
-		}
-		caPool := x509.NewCertPool()
-		if !caPool.AppendCertsFromPEM([]byte(f.Payload.CACertPEM)) {
-			return errMsg("failed to parse CA cert")
-		}
-		server.TLSConfig = &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			ClientCAs:    caPool,
-			ClientAuth:   tls.RequireAndVerifyClientCert,
-			MinVersion:   tls.VersionTLS13,
-		}
-		return server.ListenAndServeTLS("", "")
-	}
-	return server.ListenAndServe()
+	return start(server)
 }
 
 // logWrap logs every request at debug level (method, path, remote).
@@ -77,6 +101,9 @@ func (f *ServerFactory) logWrap(next http.Handler) http.Handler {
 // sees raw zstd bytes (first byte 0x28 = '(').
 func (f *ServerFactory) decompress(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Bound the compressed input before handing it to a decompressor, then
+		// bound the expanded body below to prevent compression bombs.
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding")))
 		if enc == "" || enc == "identity" {
 			next.ServeHTTP(w, r)
@@ -106,8 +133,16 @@ func (f *ServerFactory) decompress(next http.Handler) http.Handler {
 			return
 		}
 		r.Body = reader
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		next.ServeHTTP(w, r)
 		_ = reader.Close()
+	})
+}
+
+func (f *ServerFactory) limitBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -121,11 +156,6 @@ func (f *ServerFactory) jwtWrap(next http.Handler) http.Handler {
 	keyFunc := func(t *jwt.Token) (any, error) { return f.Payload.JWTPublicKey, nil }
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip JWT for internal endpoints (used by sing-box to fetch config).
-		if strings.HasPrefix(r.URL.Path, "/internal/") {
-			next.ServeHTTP(w, r)
-			return
-		}
 		tok := bearerToken(r)
 		if tok == "" {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "missing bearer token"})
@@ -134,6 +164,22 @@ func (f *ServerFactory) jwtWrap(next http.Handler) http.Handler {
 		claims := jwt.MapClaims{}
 		if _, err := jwt.ParseWithClaims(tok, claims, keyFunc); err != nil {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid jwt"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (f *ServerFactory) internalTokenWrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.InternalRESTToken == "" || r.URL.Query().Get("token") != f.InternalRESTToken {
+			if hijacker, ok := w.(http.Hijacker); ok {
+				if conn, _, err := hijacker.Hijack(); err == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid internal token"})
 			return
 		}
 		next.ServeHTTP(w, r)

@@ -83,12 +83,16 @@ func (m *Manager) CreateTable() error {
 	}
 
 	m.dropSetIfExists()
-	_ = m.run("add", "table", "inet", tableName)
+	if err := m.run("add", "table", "inet", tableName); err != nil {
+		return err
+	}
 
 	// Base chains: accept by default, drop only set members.
-	_ = m.run("add", "chain", "inet", tableName, "input", "{ type filter hook input priority filter; policy accept; }")
-	_ = m.run("add", "chain", "inet", tableName, "forward", "{ type filter hook forward priority filter; policy accept; }")
-	_ = m.run("add", "chain", "inet", tableName, "output", "{ type filter hook output priority filter; policy accept; }")
+	for _, chain := range []string{"input", "forward", "output"} {
+		if err := m.run("add", "chain", "inet", tableName, chain, "{ type filter hook "+chain+" priority filter; policy accept; }"); err != nil {
+			return err
+		}
+	}
 
 	// Address sets (v4 + v6) for ingress/torrent/egress.
 	for _, spec := range []struct {
@@ -102,28 +106,46 @@ func (m *Manager) CreateTable() error {
 		{setEgress, "ipv4_addr"},
 		{setEgress6, "ipv6_addr"},
 	} {
-		_ = m.run("add", "set", "inet", tableName, spec.name, fmt.Sprintf("{ type %s; flags timeout; }", spec.typ))
+		if err := m.run("add", "set", "inet", tableName, spec.name, fmt.Sprintf("{ type %s; flags interval, timeout; }", spec.typ)); err != nil {
+			return err
+		}
 	}
 
 	// Egress port set (inet_service, used by tcp/udp dport lookups).
-	_ = m.run("add", "set", "inet", tableName, setEgressPort, "{ type inet_service; flags interval; }")
+	if err := m.run("add", "set", "inet", tableName, setEgressPort, "{ type inet_service; flags interval; }"); err != nil {
+		return err
+	}
 
 	// Ingress drop rules (input + forward) for torrent-blocker and ingress sets.
 	for _, set := range []string{setTorrent, setTorrent + "6"} {
-		_ = m.run("add", "rule", "inet", tableName, "input", ipLiteral(set)+" saddr @"+set+" drop")
-		_ = m.run("add", "rule", "inet", tableName, "forward", ipLiteral(set)+" saddr @"+set+" drop")
+		if err := m.run("add", "rule", "inet", tableName, "input", ipLiteral(set)+" saddr @"+set+" drop"); err != nil {
+			return err
+		}
+		if err := m.run("add", "rule", "inet", tableName, "forward", ipLiteral(set)+" saddr @"+set+" drop"); err != nil {
+			return err
+		}
 	}
 	for _, set := range []string{setIngress, setIngress6} {
-		_ = m.run("add", "rule", "inet", tableName, "input", ipLiteral(set)+" saddr @"+set+" drop")
-		_ = m.run("add", "rule", "inet", tableName, "forward", ipLiteral(set)+" saddr @"+set+" drop")
+		if err := m.run("add", "rule", "inet", tableName, "input", ipLiteral(set)+" saddr @"+set+" drop"); err != nil {
+			return err
+		}
+		if err := m.run("add", "rule", "inet", tableName, "forward", ipLiteral(set)+" saddr @"+set+" drop"); err != nil {
+			return err
+		}
 	}
 	// Egress drop rules (output) for egress sets.
 	for _, set := range []string{setEgress, setEgress6} {
-		_ = m.run("add", "rule", "inet", tableName, "output", ipLiteral(set)+" daddr @"+set+" drop")
+		if err := m.run("add", "rule", "inet", tableName, "output", ipLiteral(set)+" daddr @"+set+" drop"); err != nil {
+			return err
+		}
 	}
 	// Egress port drop rules (tcp + udp dport).
-	_ = m.run("add", "rule", "inet", tableName, "output", "tcp dport @"+setEgressPort+" drop")
-	_ = m.run("add", "rule", "inet", tableName, "output", "udp dport @"+setEgressPort+" drop")
+	if err := m.run("add", "rule", "inet", tableName, "output", "tcp dport @"+setEgressPort+" drop"); err != nil {
+		return err
+	}
+	if err := m.run("add", "rule", "inet", tableName, "output", "udp dport @"+setEgressPort+" drop"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -167,16 +189,30 @@ func (m *Manager) UnblockIPs(ips []string) error {
 	if !m.available {
 		return fmt.Errorf("nft unavailable")
 	}
+	var firstErr error
 	for _, ip := range ips {
 		t := setFor(ip, setTorrent, setTorrent+"6")
 		if t == "" {
 			continue
 		}
-		_ = m.run("delete", "element", "inet", tableName, t, "{ "+ip+" }")
+		if err := m.run("delete", "element", "inet", tableName, t, "{ "+ip+" }"); err != nil && !isMissingElementError(err) && firstErr == nil {
+			firstErr = err
+		}
 		i := setFor(ip, setIngress, setIngress6)
-		_ = m.run("delete", "element", "inet", tableName, i, "{ "+ip+" }")
+		if err := m.run("delete", "element", "inet", tableName, i, "{ "+ip+" }"); err != nil && !isMissingElementError(err) && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return nil
+	return firstErr
+}
+
+func isMissingElementError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "No such file or directory") ||
+		strings.Contains(message, "Could not process rule") && strings.Contains(message, "not found")
 }
 
 // AddIngressIPs adds IPs to the ingress-filter set (used by plugin sync).
@@ -186,14 +222,17 @@ func (m *Manager) AddIngressIPs(ips []string) error {
 	if !m.available {
 		return fmt.Errorf("nft unavailable")
 	}
+	var firstErr error
 	for _, ip := range ips {
 		set := setFor(ip, setIngress, setIngress6)
 		if set == "" {
 			continue
 		}
-		_ = m.run("add", "element", "inet", tableName, set, "{ "+ip+" }")
+		if err := m.run("add", "element", "inet", tableName, set, "{ "+ip+" }"); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return nil
+	return firstErr
 }
 
 // AddEgressIPs adds IPs to the egress-filter set (used by plugin sync).
@@ -203,14 +242,17 @@ func (m *Manager) AddEgressIPs(ips []string) error {
 	if !m.available {
 		return fmt.Errorf("nft unavailable")
 	}
+	var firstErr error
 	for _, ip := range ips {
 		set := setFor(ip, setEgress, setEgress6)
 		if set == "" {
 			continue
 		}
-		_ = m.run("add", "element", "inet", tableName, set, "{ "+ip+" }")
+		if err := m.run("add", "element", "inet", tableName, set, "{ "+ip+" }"); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return nil
+	return firstErr
 }
 
 // AddEgressPorts adds ports to the egress-filter port set.
@@ -239,6 +281,9 @@ func (m *Manager) AddEgressPorts(ports []int) error {
 // setFor returns the v4 or v6 set name for an IP.
 func setFor(ip, setV4, setV6 string) string {
 	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		parsed, _, _ = net.ParseCIDR(ip)
+	}
 	if parsed == nil {
 		return ""
 	}

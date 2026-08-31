@@ -63,3 +63,24 @@ func TestDecompressIdentity(t *testing.T) {
 		t.Fatalf("identity passthrough broken: %q", got)
 	}
 }
+
+func TestInternalAuthorizationRequiresLoopbackOrToken(t *testing.T) {
+	f := &ServerFactory{InternalRESTToken: "secret"}
+	for name, tc := range map[string]struct {
+		query string
+		want  int
+	}{
+		"missing": {query: "", want: http.StatusUnauthorized},
+		"wrong":   {query: "wrong", want: http.StatusUnauthorized},
+		"valid":   {query: "secret", want: http.StatusOK},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/internal/get-config?token="+tc.query, nil)
+			rec := httptest.NewRecorder()
+			f.internalTokenWrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })).ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.want)
+			}
+		})
+	}
+}

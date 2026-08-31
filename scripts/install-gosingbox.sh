@@ -22,12 +22,12 @@
 #   GOSINGBOX_RELEASE_TAG    release tag         (default go-v3.4.1-go)
 #   GOSINGBOX_VER            package version     (default 3.4.1-go)
 #   GOSINGBOX_INSTALL_DIR    install dir         (default /opt/gosingbox)
-#   NODE_PORT / SECRET_KEY / LOG_LEVEL
+#   NODE_PORT / SECRET_KEY / INTERNAL_SOCKET_PATH / INTERNAL_REST_TOKEN / LOG_LEVEL
 set -eu
 
 # Installer version. Bump the patch number on EVERY change to this script so
 # users can tell the CDN stopped serving the latest revision. (See AGENTS.md.)
-INSTALLER_VERSION="3.4.1.0"
+INSTALLER_VERSION="3.4.1.1"
 
 OWNER="${GOSINGBOX_RELEASE_OWNER:-rwnode}"
 REPO="${GOSINGBOX_RELEASE_REPO:-rwnode-gosingbox}"
@@ -141,6 +141,8 @@ write_env() {
     cat > "$INSTALL_DIR/env" <<EOF
 NODE_PORT=$NODE_PORT
 SECRET_KEY='$ESCAPED_KEY'
+INTERNAL_SOCKET_PATH=${INTERNAL_SOCKET_PATH:-/run/gosingbox/internal.sock}
+INTERNAL_REST_TOKEN=${INTERNAL_REST_TOKEN:-$(openssl rand -hex 32 2>/dev/null || dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 | tr -d '\n')}
 SINGBOX_LOG_LEVEL=warn
 # Node 自身日志等级: debug | info | warn | error（排查面板连接问题时可设 debug）
 LOG_LEVEL=${LOG_LEVEL:-info}

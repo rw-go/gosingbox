@@ -82,6 +82,10 @@ type removeUsersRequest struct {
 }
 
 func (h *Handler) addUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
 	var req addUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"success": false, "error": err.Error()}})
@@ -129,6 +133,10 @@ func (h *Handler) addUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) addUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
 	var req addUsersRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"success": false, "error": err.Error()}})
@@ -161,6 +169,10 @@ func (h *Handler) addUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) removeUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
 	var req removeUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"success": false, "error": err.Error()}})
@@ -172,6 +184,10 @@ func (h *Handler) removeUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) removeUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
 	var req removeUsersRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"success": false, "error": err.Error()}})

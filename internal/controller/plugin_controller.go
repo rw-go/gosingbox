@@ -56,8 +56,8 @@ func (p *Plugin) sync(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Plugin == nil {
 		// Empty plugin push: tear down the firewall table.
-		_ = p.app.NftRecreateTables()
-		writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"accepted": true}})
+		ok := p.app.NftRecreateTables()
+		writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"accepted": ok}})
 		return
 	}
 	ok := p.app.SyncPlugins(body.Plugin.Config)

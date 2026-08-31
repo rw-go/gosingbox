@@ -6,8 +6,10 @@ package transpiler
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -396,13 +398,24 @@ func parseDest(dest, fallbackServer string) (string, int) {
 		return fallbackServer, 443
 	}
 	trimmed := strings.TrimSpace(dest)
-	if i := strings.LastIndex(trimmed, ":"); i > 0 {
-		host := trimmed[:i]
-		var port = 443
-		if n, err := fmt.Sscanf(trimmed[i+1:], "%d", &port); err == nil && n == 1 && port > 0 && port <= 65535 {
+	if host, portStr, err := net.SplitHostPort(trimmed); err == nil {
+		var port int
+		if n, scanErr := fmt.Sscanf(portStr, "%d", &port); scanErr == nil && n == 1 && port > 0 && port <= 65535 {
 			return host, port
 		}
 		return host, 443
+	}
+	if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		return strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"), 443
+	}
+	if strings.Count(trimmed, ":") == 1 {
+		if host, port, ok := strings.Cut(trimmed, ":"); ok {
+			var value int
+			if n, err := fmt.Sscanf(port, "%d", &value); err == nil && n == 1 && value > 0 && value <= 65535 {
+				return host, value
+			}
+			return host, 443
+		}
 	}
 	return trimmed, 443
 }
@@ -593,6 +606,31 @@ func buildRouting(cfg map[string]any) (route map[string]any, hasRemoteSets bool)
 		if proto := toStringArray(r["protocol"]); len(proto) > 0 {
 			rule["protocol"] = proto
 		}
+		if network := toStringArray(r["network"]); len(network) > 0 {
+			rule["network"] = network
+		}
+		if ports, ranges := splitPorts(r["port"]); len(ports) > 0 || len(ranges) > 0 {
+			if len(ports) > 0 {
+				rule["port"] = ports
+			}
+			if len(ranges) > 0 {
+				rule["port_range"] = ranges
+			}
+		}
+		if ports, ranges := splitPorts(r["sourcePort"]); len(ports) > 0 || len(ranges) > 0 {
+			if len(ports) > 0 {
+				rule["source_port"] = ports
+			}
+			if len(ranges) > 0 {
+				rule["source_port_range"] = ranges
+			}
+		}
+		if source := toStringArray(r["source"]); len(source) > 0 {
+			rule["source_ip_cidr"] = source
+		}
+		if users := toStringArray(r["user"]); len(users) > 0 {
+			rule["user"] = users
+		}
 
 		var domainSuffix, domainKeyword, ruleSetRefs []string
 		for _, d := range toStringArray(r["domain"]) {
@@ -602,14 +640,19 @@ func buildRouting(cfg map[string]any) (route map[string]any, hasRemoteSets bool)
 			case strings.HasPrefix(d, "keyword:"):
 				domainKeyword = append(domainKeyword, strings.TrimPrefix(d, "keyword:"))
 			case strings.HasPrefix(d, "full:"):
-				domainSuffix = append(domainSuffix, strings.TrimPrefix(d, "full:"))
+				domain := strings.TrimPrefix(d, "full:")
+				if domain != "" {
+					rule["domain"] = appendString(rule["domain"], domain)
+				}
 			case strings.HasPrefix(d, "geosite:"):
 				name := strings.TrimPrefix(d, "geosite:")
 				tag := "geosite-" + name
 				ruleSetRefs = append(ruleSetRefs, tag)
 				ruleSetTags[tag] = struct{ Kind, Name string }{Kind: "geosite", Name: name}
 			case strings.HasPrefix(d, "regexp:"):
-				// not mapped
+				if regex := strings.TrimPrefix(d, "regexp:"); regex != "" {
+					rule["domain_regex"] = appendString(rule["domain_regex"], regex)
+				}
 			default:
 				domainSuffix = append(domainSuffix, d)
 			}
@@ -630,6 +673,10 @@ func buildRouting(cfg map[string]any) (route map[string]any, hasRemoteSets bool)
 				tag := "geoip-" + name
 				ruleSetRefs = append(ruleSetRefs, tag)
 				ruleSetTags[tag] = struct{ Kind, Name string }{Kind: "geoip", Name: name}
+			default:
+				if ip != "" {
+					rule["ip_cidr"] = appendString(rule["ip_cidr"], ip)
+				}
 			}
 		}
 		if len(ruleSetRefs) > 0 {
@@ -691,7 +738,7 @@ func buildRouting(cfg map[string]any) (route map[string]any, hasRemoteSets bool)
 }
 
 func hasMatcher(rule map[string]any) bool {
-	for _, k := range []string{"inbound", "protocol", "domain_suffix", "domain_keyword", "rule_set"} {
+	for _, k := range []string{"inbound", "protocol", "network", "port", "port_range", "source_port", "source_port_range", "source_ip_cidr", "user", "domain", "domain_suffix", "domain_keyword", "domain_regex", "ip_cidr", "rule_set"} {
 		if v, ok := rule[k].([]string); ok && len(v) > 0 {
 			return true
 		}
@@ -700,6 +747,52 @@ func hasMatcher(rule map[string]any) bool {
 		return true
 	}
 	return false
+}
+
+func appendString(value any, item string) []string {
+	items, _ := value.([]string)
+	return append(items, item)
+}
+
+func stringOrStringArray(value any) []string {
+	if s, ok := value.(string); ok && s != "" {
+		return []string{s}
+	}
+	if n, ok := value.(float64); ok {
+		return []string{fmt.Sprintf("%d", int(n))}
+	}
+	return toStringArray(value)
+}
+
+func splitPorts(value any) (ports, ranges []any) {
+	for _, item := range stringOrStringArray(value) {
+		for _, token := range strings.Split(item, ",") {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				continue
+			}
+			if strings.Contains(token, "-") {
+				if validPortRange(token) {
+					ranges = append(ranges, token)
+				}
+			} else {
+				if port, err := strconv.Atoi(token); err == nil && port >= 1 && port <= 65535 {
+					ports = append(ports, port)
+				}
+			}
+		}
+	}
+	return ports, ranges
+}
+
+func validPortRange(value string) bool {
+	parts := strings.Split(value, "-")
+	if len(parts) != 2 {
+		return false
+	}
+	start, errStart := strconv.Atoi(strings.TrimSpace(parts[0]))
+	end, errEnd := strconv.Atoi(strings.TrimSpace(parts[1]))
+	return errStart == nil && errEnd == nil && start >= 1 && end <= 65535 && start <= end
 }
 
 func geoRuleSetURL(kind, name string) string {

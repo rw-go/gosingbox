@@ -8,7 +8,7 @@ import (
 	"github.com/rwnode/rwnode-gosingbox/internal/app"
 )
 
-// Internal handles the /internal/* routes (unauthenticated). These mirror the
+// Internal handles the /internal/* routes (query-token authenticated). These mirror the
 // Node.js InternalController: get-config returns the stored panel config and
 // webhook accepts a POST (used by the Xray data plane; here a no-op since
 // sing-box has no streaming webhook).

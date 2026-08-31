@@ -112,7 +112,7 @@ func (r *Reader) Stats() Stats {
 	memFree, memTotal := memInfo()
 	return Stats{
 		MemoryFree: memFree,
-		MemoryUsed: memTotal - memFree,
+		MemoryUsed: maxUint64(memTotal, memFree) - memFree,
 		Uptime:     readUptime(),
 		LoadAvg:    readLoadAvg(),
 		Interface:  r.DefaultRate(),
@@ -187,6 +187,10 @@ func (r *Reader) readNetDev() {
 		}
 		elapsed := cur.timestamp.Sub(prev.timestamp).Seconds()
 		if elapsed <= 0 {
+			continue
+		}
+		if cur.rx < prev.rx || cur.tx < prev.tx {
+			delete(r.rates, name)
 			continue
 		}
 		rxRate := float64(cur.rx-prev.rx) / elapsed
@@ -312,4 +316,11 @@ func readCPUModel() string {
 		}
 	}
 	return "unknown"
+}
+
+func maxUint64(value, floor uint64) uint64 {
+	if value < floor {
+		return floor
+	}
+	return value
 }

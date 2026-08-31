@@ -4,6 +4,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -48,6 +49,10 @@ type App struct {
 	// preStart cleanupSockets config from the last plugin sync.
 	preMu      sync.Mutex
 	preCleanup *CleanupSocketsSpec
+	userMu     sync.Mutex
+	userTimer  *time.Timer
+	userEpoch  uint64
+	stopped    bool
 }
 
 // New creates an App around the given embedded sing-box engine.
@@ -77,6 +82,28 @@ func New(logger *slog.Logger, proc *singbox.Engine, st *state.State, debounceMs 
 
 // Start transplies the panel config and applies it immediately (full push).
 func (a *App) Start(raw []byte) error {
+	return a.StartWithForce(raw, true)
+}
+
+// StartWithForce applies a panel config. Repeated identical starts reuse the
+// running data plane unless the panel explicitly requests a restart.
+func (a *App) StartWithForce(raw []byte, force bool) error {
+	a.userMu.Lock()
+	a.stopped = false
+	a.userEpoch++
+	if a.userTimer != nil {
+		a.userTimer.Stop()
+		a.userTimer = nil
+	}
+	a.userMu.Unlock()
+	if !force && a.state.HasConfig() && bytes.Equal(a.state.RawConfig(), raw) && a.proc.IsRunning() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		healthy := a.proc.Ping(ctx)
+		cancel()
+		if healthy {
+			return nil
+		}
+	}
 	a.state.SetRawConfig(raw)
 	return a.applyToSingbox()
 }
@@ -123,14 +150,32 @@ func inboundTagsOf(cfg map[string]any) []string {
 // hot-swap (no listener restart).
 func (a *App) UserChanged() {
 	a.logger.Info("user change; scheduling debounced hot-swap")
-	time.AfterFunc(a.debounceMs, func() {
-		if err := a.applyUserHotSwap(); err != nil {
-			a.logger.Error("hot-swap users failed; falling back to full apply", "error", err)
-			if err := a.applyToSingbox(); err != nil {
-				a.logger.Error("full apply fallback failed", "error", err)
+	a.userMu.Lock()
+	if a.stopped {
+		a.userMu.Unlock()
+		return
+	}
+	if a.userTimer == nil {
+		epoch := a.userEpoch
+		a.userTimer = time.AfterFunc(a.debounceMs, func() {
+			a.userMu.Lock()
+			if a.stopped || epoch != a.userEpoch {
+				a.userMu.Unlock()
+				return
 			}
-		}
-	})
+			a.userTimer = nil
+			a.userMu.Unlock()
+			if err := a.applyUserHotSwap(); err != nil {
+				a.logger.Error("hot-swap users failed; falling back to full apply", "error", err)
+				if err := a.applyToSingbox(); err != nil {
+					a.logger.Error("full apply fallback failed", "error", err)
+				}
+			}
+		})
+	} else {
+		a.userTimer.Reset(a.debounceMs)
+	}
+	a.userMu.Unlock()
 }
 
 // applyUserHotSwap pushes the current VLESS and Shadowsocks 2022 user sets into
@@ -198,6 +243,14 @@ func (a *App) RemoveSsUser(name string) bool {
 
 // Stop shuts down the sing-box process.
 func (a *App) Stop() {
+	a.userMu.Lock()
+	a.stopped = true
+	a.userEpoch++
+	if a.userTimer != nil {
+		a.userTimer.Stop()
+		a.userTimer = nil
+	}
+	a.userMu.Unlock()
 	a.proc.Shutdown()
 }
 
@@ -487,6 +540,7 @@ type ConnectionDropSpec struct {
 // sing-box data plane (documented gaps): torrent reports stay empty and
 // connection-drop whitelisting has no effect.
 func (a *App) SyncPlugins(p PluginSpec) bool {
+	ok := true
 	var cleanup *CleanupSocketsSpec
 	if p.PreStart != nil && p.PreStart.Enabled {
 		cleanup = p.PreStart.CleanupSockets
@@ -504,6 +558,7 @@ func (a *App) SyncPlugins(p PluginSpec) bool {
 		ips := a.resolveIpList(p.IngressFilter.BlockedIPs, sharedMap)
 		if err := a.nft.AddIngressIPs(ips); err != nil {
 			a.logger.Warn("plugin sync: ingress filter failed", "error", err)
+			ok = false
 		}
 	}
 
@@ -511,13 +566,15 @@ func (a *App) SyncPlugins(p PluginSpec) bool {
 		ips := a.resolveIpList(p.EgressFilter.BlockedIPs, sharedMap)
 		if err := a.nft.AddEgressIPs(ips); err != nil {
 			a.logger.Warn("plugin sync: egress filter failed", "error", err)
+			ok = false
 		}
 		if err := a.nft.AddEgressPorts(p.EgressFilter.BlockedPorts); err != nil {
 			a.logger.Warn("plugin sync: egress port filter failed", "error", err)
+			ok = false
 		}
 	}
 
-	return true
+	return ok
 }
 
 // resolveSharedLists builds a name → prefixes/IPs map from the plugin's

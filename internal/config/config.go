@@ -19,14 +19,10 @@ type Config struct {
 	InternalRESTToken  string
 	InternalSocketPath string
 
-	SingboxBinPath    string
-	SingboxConfigPath string
 	SingboxStatsAddr  string
 	SingboxClashAddr  string
-	SingboxLogDir     string
 	SingboxLogLevel   string
 	SingboxDebounceMs int
-	SingboxDrainMs    int
 	SingboxListen     string
 	SingboxGeoDir     string
 
@@ -42,31 +38,37 @@ func envOr(key, def string) string {
 	return def
 }
 
-func envInt(key string, def int) int {
+func envInt(key string, def int) (int, error) {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			return n
+			return n, nil
+		} else {
+			return 0, fmt.Errorf("%s must be an integer: %w", key, err)
 		}
 	}
-	return def
+	return def, nil
 }
 
 // Load reads and validates all runtime env vars.
 func Load() (*Config, error) {
+	nodePort, err := envInt("NODE_PORT", 2222)
+	if err != nil {
+		return nil, err
+	}
+	debounceMs, err := envInt("SINGBOX_DEBOUNCE_MS", 5000)
+	if err != nil {
+		return nil, err
+	}
 	cfg := &Config{
-		NodePort:           envInt("NODE_PORT", 2222),
+		NodePort:           nodePort,
 		SecretKey:          os.Getenv("SECRET_KEY"),
 		LogLevel:           envOr("LOG_LEVEL", "info"),
 		InternalRESTToken:  envOr("INTERNAL_REST_TOKEN", ""),
 		InternalSocketPath: envOr("INTERNAL_SOCKET_PATH", ""),
-		SingboxBinPath:     envOr("SINGBOX_BIN_PATH", "/usr/local/bin/sing-box"),
-		SingboxConfigPath:  envOr("SINGBOX_CONFIG_PATH", "/var/lib/rnode/singbox/config.json"),
 		SingboxStatsAddr:   envOr("SINGBOX_STATS_ADDRESS", "127.0.0.1:6450"),
 		SingboxClashAddr:   envOr("SINGBOX_CLASH_ADDRESS", "127.0.0.1:9090"),
-		SingboxLogDir:      envOr("SINGBOX_LOG_DIR", "/var/log/rnode"),
 		SingboxLogLevel:    envOr("SINGBOX_LOG_LEVEL", "warn"),
-		SingboxDebounceMs:  envInt("SINGBOX_DEBOUNCE_MS", 5000),
-		SingboxDrainMs:     envInt("SINGBOX_DRAIN_MS", 3000),
+		SingboxDebounceMs:  debounceMs,
 		SingboxListen:      os.Getenv("SINGBOX_LISTEN"),
 		SingboxGeoDir:      os.Getenv("SINGBOX_GEO_DIR"),
 		AsnIndexPath:       os.Getenv("ASN_INDEX_PATH"),
@@ -79,6 +81,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.NodePort <= 0 || cfg.NodePort > 65535 {
 		return nil, fmt.Errorf("NODE_PORT out of range: %d", cfg.NodePort)
+	}
+	if cfg.SingboxDebounceMs < 0 {
+		return nil, fmt.Errorf("SINGBOX_DEBOUNCE_MS must be non-negative: %d", cfg.SingboxDebounceMs)
 	}
 	return cfg, nil
 }

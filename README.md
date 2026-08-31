@@ -16,7 +16,7 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 - **断连（connection-drop）**：`drop-ips` / `drop-users-connections` 走 clash_api
   `DELETE /connections/:id` 关闭匹配连接，无需 `sockdestroy`/`CAP_NET_ADMIN`。
 - **preStart**：`cleanupSockets` 在每次 sing-box (re)start 前清理遗留 unix socket。
-- 一键安装/升级/卸载（Alpine / OpenRC）。
+- 一键安装/升级/卸载（OpenRC / systemd）。
 - geo 检测（内置 geocheck）、ASN shared lists、nftables ingress/egress filter。
 
 ## 一键安装（OpenRC / systemd）
@@ -51,6 +51,8 @@ Alpine 用 OpenRC，Debian/Ubuntu/Arch 等用 systemd。
 |---|---|---|
 | `NODE_PORT` | `2222` | 面板连接端口 |
 | `SECRET_KEY` | — | 面板下发（含节点证书/JWT 公钥），serve 模式必填 |
+| `INTERNAL_SOCKET_PATH` | — | internal API 使用的 Unix socket 路径，serve 模式必填 |
+| `INTERNAL_REST_TOKEN` | — | internal API 的 query token，serve 模式必填 |
 | `LOG_LEVEL` | `info` | 节点自身日志级别（debug/info/warn/error） |
 | `SINGBOX_STATS_ADDRESS` | `127.0.0.1:6450` | 内嵌 v2ray_api gRPC 统计地址 |
 | `SINGBOX_CLASH_ADDRESS` | `127.0.0.1:9090` | 内嵌 clash_api 地址（在线用户/断连用） |
@@ -60,7 +62,8 @@ Alpine 用 OpenRC，Debian/Ubuntu/Arch 等用 systemd。
 | `SINGBOX_GEO_DIR` | — | geosite/geoip rule-set(.srs) 下载缓存目录 |
 | `ASN_INDEX_PATH` | — | asn-prefixes.json（remnawave/asn-index，ASN shared list 用） |
 
-其余见 `scripts/go-standalone/env.example`。
+其余见 `scripts/go-standalone/env.example`。gosingbox 使用内嵌 sing-box，不使用外部
+sing-box 可执行文件、外部配置文件或独立 sing-box 日志目录。
 
 ## 功能边界
 

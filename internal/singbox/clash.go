@@ -58,6 +58,7 @@ func FetchOnlineConnections(ctx context.Context, clashAddr string) ([]ClashConne
 func CloseConnections(ctx context.Context, clashAddr string, ids []string) (int, error) {
 	client := &http.Client{Timeout: 3 * time.Second}
 	closed := 0
+	var firstErr error
 	for _, id := range ids {
 		if id == "" {
 			continue
@@ -68,13 +69,18 @@ func CloseConnections(ctx context.Context, clashAddr string, ids []string) (int,
 		}
 		resp, err := client.Do(req)
 		if err != nil {
-			return closed, fmt.Errorf("clash api unavailable: %w", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("clash api unavailable: %w", err)
+			}
+			continue
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
 			closed++
+		} else if firstErr == nil {
+			firstErr = fmt.Errorf("clash api status %d while closing connection", resp.StatusCode)
 		}
 	}
-	return closed, nil
+	return closed, firstErr
 }

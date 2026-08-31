@@ -44,15 +44,25 @@ type statBody struct {
 	IP    string `json:"ip"`
 }
 
-func decodeStatBody(r *http.Request) statBody {
+func decodeStatBody(r *http.Request) (statBody, error) {
 	var b statBody
-	_ = json.NewDecoder(r.Body).Decode(&b)
-	return b
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		return statBody{}, err
+	}
+	return b, nil
 }
 
 // result is a compact stat line (username/downlink/uplink).
 func (s *Stats) usersStats(w http.ResponseWriter, r *http.Request) {
-	b := decodeStatBody(r)
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	b, err := decodeStatBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"users": []any{}}})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -107,7 +117,15 @@ func (s *Stats) systemStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Stats) inboundStats(w http.ResponseWriter, r *http.Request) {
-	b := decodeStatBody(r)
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	b, err := decodeStatBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"inbound": "", "downlink": 0, "uplink": 0}})
+		return
+	}
 	res := s.queryAggregated(r, "inbound", b.Tag, b.Reset)
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
 		"inbound": b.Tag, "downlink": res.Downlink, "uplink": res.Uplink,
@@ -115,7 +133,15 @@ func (s *Stats) inboundStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Stats) outboundStats(w http.ResponseWriter, r *http.Request) {
-	b := decodeStatBody(r)
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	b, err := decodeStatBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"outbound": "", "downlink": 0, "uplink": 0}})
+		return
+	}
 	res := s.queryAggregated(r, "outbound", b.Tag, b.Reset)
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
 		"outbound": b.Tag, "downlink": res.Downlink, "uplink": res.Uplink,
@@ -123,21 +149,45 @@ func (s *Stats) outboundStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Stats) allInboundsStats(w http.ResponseWriter, r *http.Request) {
-	b := decodeStatBody(r)
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	b, err := decodeStatBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"inbounds": []any{}}})
+		return
+	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
 		"inbounds": s.queryAll(r, "inbound", b.Reset),
 	}})
 }
 
 func (s *Stats) allOutboundsStats(w http.ResponseWriter, r *http.Request) {
-	b := decodeStatBody(r)
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	b, err := decodeStatBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"outbounds": []any{}}})
+		return
+	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
 		"outbounds": s.queryAll(r, "outbound", b.Reset),
 	}})
 }
 
 func (s *Stats) combinedStats(w http.ResponseWriter, r *http.Request) {
-	b := decodeStatBody(r)
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	b, err := decodeStatBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"inbounds": []any{}, "outbounds": []any{}}})
+		return
+	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
 		"inbounds":  s.queryAll(r, "inbound", b.Reset),
 		"outbounds": s.queryAll(r, "outbound", b.Reset),
@@ -148,10 +198,17 @@ func (s *Stats) combinedStats(w http.ResponseWriter, r *http.Request) {
 // time it was last seen (newest connection start). Data comes from the
 // sing-box clash API /connections.
 func (s *Stats) userIPList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
 	var b struct {
 		UserID string `json:"userId"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&b)
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"ips": []any{}}})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -209,10 +266,17 @@ func (s *Stats) usersIPList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Stats) userOnlineStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
 	var b struct {
 		Username string `json:"username"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&b)
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"isOnline": false}})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -235,11 +299,18 @@ func (s *Stats) userOnlineStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Stats) geocheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
 	var b struct {
 		IP        string `json:"ip"`
 		Interface string `json:"interface"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&b)
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"error": "invalid request body"}})
+		return
+	}
 
 	res, err := geocheckRun(b.IP, b.Interface)
 	if err != nil {
@@ -250,10 +321,6 @@ func (s *Stats) geocheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, envelope{Response: res})
-}
-
-func (s *Stats) notImplemented(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{}})
 }
 
 // errorEnvelope mirrors the official HttpExceptionFilter error shape the panel

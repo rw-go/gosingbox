@@ -76,8 +76,7 @@ func main() {
 	}
 
 	// Data-plane driver mode.
-	runDriver(logger, cfg, application, proc, *configPath, *restartAfter)
-	<-ctx.Done()
+	runDriver(ctx, logger, cfg, application, proc, *configPath, *restartAfter)
 	logger.Info("shutting down")
 	application.Stop()
 }
@@ -97,13 +96,21 @@ func runServer(logger *slog.Logger, cfg *config.Config, application *app.App, pr
 	controller.NewXray(application, logger).Router(mux)
 	controller.NewStats(application, logger).Router(mux)
 	controller.NewHandler(application, logger).Router(mux)
-	controller.NewInternal(application, logger).Router(mux)
 	controller.NewPlugin(application, logger).Router(mux)
+	internalMux := http.NewServeMux()
+	controller.NewInternal(application, logger).Router(internalMux)
 
 	srv := &server.ServerFactory{
-		Mux:     mux,
-		Payload: p,
-		Logger:  logger,
+		Mux:               mux,
+		Payload:           p,
+		Logger:            logger,
+		InternalRESTToken: cfg.InternalRESTToken,
+	}
+	internal := &server.ServerFactory{
+		Mux:               internalMux,
+		Logger:            logger,
+		InternalRESTToken: cfg.InternalRESTToken,
+		InternalOnly:      true,
 	}
 	addr := fmt.Sprintf(":%d", cfg.NodePort)
 	logger.Info("panel HTTPS server starting", "addr", addr)
@@ -113,9 +120,19 @@ func runServer(logger *slog.Logger, cfg *config.Config, application *app.App, pr
 			os.Exit(1)
 		}
 	}()
+	if cfg.InternalSocketPath == "" || cfg.InternalRESTToken == "" {
+		logger.Error("INTERNAL_SOCKET_PATH and INTERNAL_REST_TOKEN are required in serve mode")
+		os.Exit(1)
+	}
+	go func() {
+		if err := internal.ListenAndServeUnix(cfg.InternalSocketPath); err != nil && err != http.ErrServerClosed {
+			logger.Error("internal server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
 }
 
-func runDriver(logger *slog.Logger, cfg *config.Config, application *app.App, proc *singbox.Engine, configPath string, restartAfter time.Duration) {
+func runDriver(ctx context.Context, logger *slog.Logger, cfg *config.Config, application *app.App, proc *singbox.Engine, configPath string, restartAfter time.Duration) {
 	if configPath == "" {
 		logger.Error("data-plane driver requires -config")
 		os.Exit(1)
@@ -156,9 +173,10 @@ func runDriver(logger *slog.Logger, cfg *config.Config, application *app.App, pr
 	defer ticker.Stop()
 	for {
 		select {
-		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 			reportStats(logger, cfg.SingboxStatsAddr)
-			ticker.Reset(5 * time.Second)
 		}
 	}
 }

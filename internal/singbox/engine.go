@@ -206,9 +206,6 @@ func (e *Engine) stopLocked() {
 	if e.box == nil {
 		return
 	}
-	if im := service.FromContext[adapter.InboundManager](e.ctx); im != nil {
-		_ = im.Close()
-	}
 	e.box.Close()
 	e.box = nil
 	if e.cancel != nil {
