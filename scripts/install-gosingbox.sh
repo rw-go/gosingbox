@@ -19,24 +19,24 @@
 # Optional overrides via env:
 #   GOSINGBOX_RELEASE_OWNER  GitHub owner        (default rwnode)
 #   GOSINGBOX_RELEASE_REPO   GitHub repo         (default rwnode-gosingbox)
-#   GOSINGBOX_RELEASE_TAG    release tag         (default 3.4.1.1)
-#   GOSINGBOX_VER            package version     (default 3.4.1.1)
+#   GOSINGBOX_RELEASE_TAG    release tag         (default: latest release)
+#   GOSINGBOX_VER            package version     (default: same as tag)
 #   GOSINGBOX_INSTALL_DIR    install dir         (default /opt/gosingbox)
 #   NODE_PORT / SECRET_KEY / INTERNAL_SOCKET_PATH / INTERNAL_REST_TOKEN / LOG_LEVEL
 set -eu
 
 # Installer version. Bump the patch number on EVERY change to this script so
 # users can tell the CDN stopped serving the latest revision. (See AGENTS.md.)
-INSTALLER_VERSION="3.4.1.4"
+INSTALLER_VERSION="3.4.1.5"
 
 OWNER="${GOSINGBOX_RELEASE_OWNER:-rwnode}"
 REPO="${GOSINGBOX_RELEASE_REPO:-rwnode-gosingbox}"
-TAG="${GOSINGBOX_RELEASE_TAG:-3.4.1.1}"
-VER="${GOSINGBOX_VER:-3.4.1.1}"
+# 默认留空：下载时自动解析 latest release；显式设置则固定版本。
+TAG="${GOSINGBOX_RELEASE_TAG:-}"
+VER="${GOSINGBOX_VER:-}"
 ARCH="amd64"
 INSTALL_DIR="${GOSINGBOX_INSTALL_DIR:-/opt/gosingbox}"
 SERVICE="gosingbox"
-TARBALL="gosingbox-${VER}-linux-${ARCH}.tar.gz"
 GEOCHECK_LINK="/usr/local/bin/geocheck"
 
 TMP=""
@@ -120,7 +120,18 @@ is_installed() {
     [ -x "$INSTALL_DIR/bin/gosingbox" ] || [ -f "$INSTALL_DIR/env" ]
 }
 
+resolve_release() {
+    if [ -z "$TAG" ]; then
+        log "resolving latest release ..."
+        TAG="$(curl -fsSL "https://api.github.com/repos/${OWNER}/${REPO}/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+        [ -n "$TAG" ] || die "could not resolve latest release for $OWNER/$REPO"
+    fi
+    [ -z "$VER" ] && VER="$TAG"
+}
+
 download_package() {
+    resolve_release
+    TARBALL="gosingbox-${VER}-linux-${ARCH}.tar.gz"
     DL_BASE="https://github.com/${OWNER}/${REPO}/releases/download/${TAG}"
     DL_URL="${DL_BASE}/${TARBALL}"
     TMP="$(mktemp -d)"
