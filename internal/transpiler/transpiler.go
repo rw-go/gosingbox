@@ -112,9 +112,11 @@ func Transpile(raw []byte, statsListen, clashListen, logLevel string, desiredUse
 	// --- Outbounds ---
 	singBoxOutbounds := buildOutbounds(cfg)
 	var outboundTags []string
+	validOutbound := map[string]bool{}
 	for _, o := range singBoxOutbounds {
 		if tag, ok := o["tag"].(string); ok {
 			outboundTags = append(outboundTags, tag)
+			validOutbound[tag] = true
 		}
 	}
 
@@ -125,7 +127,7 @@ func Transpile(raw []byte, statsListen, clashListen, logLevel string, desiredUse
 	}
 
 	// --- Routing ---
-	routing, hasRemoteSets := buildRouting(cfg)
+	routing, hasRemoteSets := buildRouting(cfg, validOutbound)
 
 	experimental := map[string]any{
 		"v2ray_api": map[string]any{
@@ -575,7 +577,12 @@ func buildOutbounds(cfg map[string]any) []map[string]any {
 }
 
 // buildRouting maps routing.rules to a sing-box route object, plus rule-sets.
-func buildRouting(cfg map[string]any) (route map[string]any, hasRemoteSets bool) {
+// validOutbound is the set of outbound tags produced by buildOutbounds. Rules
+// referencing any other tag (e.g. the Xray-internal "REMNAWAVE_API" service tag
+// or an unsupported protocol) are dropped so sing-box never routes into a
+// missing outbound (which would produce a runtime "outbound not found" and drop
+// the connection).
+func buildRouting(cfg map[string]any, validOutbound map[string]bool) (route map[string]any, hasRemoteSets bool) {
 	routing, _ := cfg["routing"].(map[string]any)
 	if routing == nil {
 		return nil, false
@@ -594,7 +601,7 @@ func buildRouting(cfg map[string]any) (route map[string]any, hasRemoteSets bool)
 			continue
 		}
 		outboundTag, _ := r["outboundTag"].(string)
-		if outboundTag == "" {
+		if outboundTag == "" || !validOutbound[outboundTag] {
 			continue
 		}
 

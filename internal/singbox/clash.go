@@ -26,9 +26,9 @@ type clashConnectionsResponse struct {
 }
 
 // FetchOnlineConnections queries the sing-box clash API /connections endpoint
-// and returns the connections that are online right now. It returns an empty
-// slice (no error) when sing-box is not reachable, so callers degrade to
-// "nobody online" instead of failing the panel request.
+// and returns the connections that are online right now. When sing-box is not
+// reachable it returns a non-nil error; callers typically degrade that into an
+// empty "nobody online" result instead of failing the panel request.
 func FetchOnlineConnections(ctx context.Context, clashAddr string) ([]ClashConnection, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+clashAddr+"/connections", nil)
 	if err != nil {

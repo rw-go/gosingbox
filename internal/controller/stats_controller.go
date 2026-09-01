@@ -68,7 +68,8 @@ func (s *Stats) usersStats(w http.ResponseWriter, r *http.Request) {
 
 	counters, err := s.app.QueryUserCounters(ctx, b.Reset)
 	if err != nil {
-		writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"users": []any{}}})
+		s.log.Warn("users stats: query failed", "error", err)
+		writeOfficialError(w, r, http.StatusInternalServerError, "Failed to get users stats", "A011")
 		return
 	}
 	users := aggregateUsers(counters)
@@ -126,7 +127,12 @@ func (s *Stats) inboundStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"inbound": "", "downlink": 0, "uplink": 0}})
 		return
 	}
-	res := s.queryAggregated(r, "inbound", b.Tag, b.Reset)
+	res, err := s.queryAggregated(r, "inbound", b.Tag, b.Reset)
+	if err != nil {
+		s.log.Warn("inbound stats: query failed", "error", err)
+		writeOfficialError(w, r, http.StatusInternalServerError, "Failed to get inbound stats", "A012")
+		return
+	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
 		"inbound": b.Tag, "downlink": res.Downlink, "uplink": res.Uplink,
 	}})
@@ -142,7 +148,12 @@ func (s *Stats) outboundStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"outbound": "", "downlink": 0, "uplink": 0}})
 		return
 	}
-	res := s.queryAggregated(r, "outbound", b.Tag, b.Reset)
+	res, err := s.queryAggregated(r, "outbound", b.Tag, b.Reset)
+	if err != nil {
+		s.log.Warn("outbound stats: query failed", "error", err)
+		writeOfficialError(w, r, http.StatusInternalServerError, "Failed to get outbound stats", "A013")
+		return
+	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
 		"outbound": b.Tag, "downlink": res.Downlink, "uplink": res.Uplink,
 	}})
@@ -158,8 +169,14 @@ func (s *Stats) allInboundsStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"inbounds": []any{}}})
 		return
 	}
+	inbounds, err := s.queryAll(r, "inbound", b.Reset)
+	if err != nil {
+		s.log.Warn("all inbounds stats: query failed", "error", err)
+		writeOfficialError(w, r, http.StatusInternalServerError, "Failed to get inbounds stats", "A015")
+		return
+	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
-		"inbounds": s.queryAll(r, "inbound", b.Reset),
+		"inbounds": inbounds,
 	}})
 }
 
@@ -173,8 +190,14 @@ func (s *Stats) allOutboundsStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"outbounds": []any{}}})
 		return
 	}
+	outbounds, err := s.queryAll(r, "outbound", b.Reset)
+	if err != nil {
+		s.log.Warn("all outbounds stats: query failed", "error", err)
+		writeOfficialError(w, r, http.StatusInternalServerError, "Failed to get outbounds stats", "A016")
+		return
+	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
-		"outbounds": s.queryAll(r, "outbound", b.Reset),
+		"outbounds": outbounds,
 	}})
 }
 
@@ -188,9 +211,21 @@ func (s *Stats) combinedStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"inbounds": []any{}, "outbounds": []any{}}})
 		return
 	}
+	inbounds, err := s.queryAll(r, "inbound", b.Reset)
+	if err != nil {
+		s.log.Warn("combined stats: inbound query failed", "error", err)
+		writeOfficialError(w, r, http.StatusInternalServerError, "Failed to get combined stats", "A017")
+		return
+	}
+	outbounds, err := s.queryAll(r, "outbound", b.Reset)
+	if err != nil {
+		s.log.Warn("combined stats: outbound query failed", "error", err)
+		writeOfficialError(w, r, http.StatusInternalServerError, "Failed to get combined stats", "A017")
+		return
+	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
-		"inbounds":  s.queryAll(r, "inbound", b.Reset),
-		"outbounds": s.queryAll(r, "outbound", b.Reset),
+		"inbounds":  inbounds,
+		"outbounds": outbounds,
 	}})
 }
 
@@ -342,25 +377,25 @@ func writeOfficialError(w http.ResponseWriter, r *http.Request, code int, messag
 }
 
 // queryAggregated queries one tag's traffic for inbound/outbound.
-func (s *Stats) queryAggregated(r *http.Request, prefix, tag string, reset bool) statistical {
+func (s *Stats) queryAggregated(r *http.Request, prefix, tag string, reset bool) (statistical, error) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	counters, err := s.app.Query(ctx, []string{prefix + ">>>" + tag + ">>>"}, reset)
 	if err != nil {
-		return statistical{}
+		return statistical{}, err
 	}
-	return aggregateSingleTag(prefix, tag, counters)
+	return aggregateSingleTag(prefix, tag, counters), nil
 }
 
 // queryAll aggregates all inbound/outbound tags.
-func (s *Stats) queryAll(r *http.Request, prefix string, reset bool) []any {
+func (s *Stats) queryAll(r *http.Request, prefix string, reset bool) ([]any, error) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	counters, err := s.app.Query(ctx, []string{prefix + ">>>"}, reset)
 	if err != nil {
-		return []any{}
+		return nil, err
 	}
-	return aggregateAll(prefix, counters)
+	return aggregateAll(prefix, counters), nil
 }
 
 type statistical struct {

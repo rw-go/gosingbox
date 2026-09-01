@@ -81,8 +81,10 @@ func (f *ServerFactory) serve(mux *http.ServeMux, addr string, start func(*http.
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// WriteTimeout must exceed the geocheck timeout (45s) so a long
+		// geo report is not cut off mid-stream.
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 	return start(server)
 }
@@ -162,7 +164,10 @@ func (f *ServerFactory) jwtWrap(next http.Handler) http.Handler {
 			return
 		}
 		claims := jwt.MapClaims{}
-		if _, err := jwt.ParseWithClaims(tok, claims, keyFunc); err != nil {
+		// Restrict to RS256: the panel signs node tokens with its RSA private
+		// key. Without this whitelist the parser would also accept RS384/RS512
+		// (and, if keyFunc ever changed to bytes, would open up alg-confusion).
+		if _, err := jwt.ParseWithClaims(tok, claims, keyFunc, jwt.WithValidMethods([]string{"RS256"})); err != nil {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid jwt"})
 			return
 		}

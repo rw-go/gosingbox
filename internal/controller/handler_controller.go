@@ -215,7 +215,9 @@ func (h *Handler) dropUsersConnections(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if _, err := h.app.DropUsers(ctx, body.UserIDs); err != nil {
-		h.log.Debug("drop users connections: clash api unavailable", "error", err)
+		h.log.Warn("drop users connections failed", "error", err)
+		writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": false, "error": err.Error()}})
+		return
 	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
 }
@@ -235,7 +237,9 @@ func (h *Handler) dropIPs(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if _, err := h.app.DropIPs(ctx, body.IPs); err != nil {
-		h.log.Debug("drop ips: clash api unavailable", "error", err)
+		h.log.Warn("drop ips failed", "error", err)
+		writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": false, "error": err.Error()}})
+		return
 	}
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
 }

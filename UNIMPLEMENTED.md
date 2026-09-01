@@ -6,7 +6,8 @@
 ## 一、未实现的官方功能
 
 ### 1. torrent-blocker 实时检测 —— 搁置
-- **现状**：`/node/plugin/torrent-blocker/collect` 恒返回空报告；`/internal/webhook` 为 no-op。
+- **现状**：`/node/plugin/torrent-blocker/collect` 恒返回空报告；`/internal/webhook` 返回 501 降级
+  响应（不再伪装成功）。
 - **原因**：官方 BT 检测靠 **Xray 内核** sniffing + webhook 推送命中事件，nftables 只负责
   最终封 IP；sing-box 无等价能力。
 - **实现路径**（均不划算）：nftables raw payload 匹配明文 BT 握手（漏 MSE/PE 加密）；或

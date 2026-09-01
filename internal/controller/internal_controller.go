@@ -40,7 +40,10 @@ func (i *Internal) webhook(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w)
 		return
 	}
-	// Drain body; sing-box has no webhook consumers.
+	// Drain body; sing-box has no streaming webhook consumer, so this endpoint
+	// reports a degraded result instead of a fixed success (torrent detection is
+	// not implemented by the sing-box data plane; see UNIMPLEMENTED.md).
 	_ = json.NewDecoder(r.Body).Decode(&struct{}{})
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	i.log.Warn("internal webhook received but sing-box data plane has no webhook consumer")
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"ok": false, "error": "webhook not supported by sing-box data plane"})
 }

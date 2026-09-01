@@ -2,7 +2,6 @@ package singbox
 
 import (
 	"context"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -100,5 +99,3 @@ func NewStatsClientForTest(addr string) (StatsClient, error) {
 	}
 	return c, nil
 }
-
-var _ = time.Second // keep import if unused in future edits

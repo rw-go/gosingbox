@@ -13,7 +13,7 @@ func TestBuildRoutingPreservesExactAndCIDRMatchers(t *testing.T) {
 			"outboundTag": "block",
 		}}},
 	}
-	route, _ := buildRouting(cfg)
+	route, _ := buildRouting(cfg, map[string]bool{"block": true})
 	if route == nil {
 		t.Fatal("route is nil")
 	}
@@ -52,6 +52,27 @@ func TestTranspileAcceptsCIDRRoute(t *testing.T) {
 	}
 	if result.Config["route"] == nil {
 		t.Fatal("route was dropped")
+	}
+}
+
+func TestBuildRoutingDropsUnknownOutbound(t *testing.T) {
+	cfg := map[string]any{
+		"routing": map[string]any{"rules": []any{
+			map[string]any{"domain": []any{"full:example.com"}, "outboundTag": "REMNAWAVE_API"},
+			map[string]any{"domain": []any{"full:example.com"}, "outboundTag": "block"},
+		}},
+	}
+	route, _ := buildRouting(cfg, map[string]bool{"block": true})
+	if route == nil {
+		t.Fatal("route is nil")
+	}
+	rules := route["rules"].([]any)
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 rule after filtering unknown outbound, got %d", len(rules))
+	}
+	rule := rules[0].(map[string]any)
+	if got := rule["outbound"]; got != "block" {
+		t.Fatalf("outbound = %#v, want block", got)
 	}
 }
 
