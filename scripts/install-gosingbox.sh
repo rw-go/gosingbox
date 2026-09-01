@@ -27,7 +27,7 @@ set -eu
 
 # Installer version. Bump the patch number on EVERY change to this script so
 # users can tell the CDN stopped serving the latest revision. (See AGENTS.md.)
-INSTALLER_VERSION="3.4.1.5"
+INSTALLER_VERSION="3.4.1.6"
 
 OWNER="${GOSINGBOX_RELEASE_OWNER:-rwnode}"
 REPO="${GOSINGBOX_RELEASE_REPO:-rwnode-gosingbox}"
@@ -68,6 +68,8 @@ read_answer() {
     else
         IFS= read -r REPLY 2>/dev/null || REPLY=""
     fi
+    # strip any trailing CR some terminals send
+    REPLY="$(printf '%s' "$REPLY" | tr -d '\r')"
 }
 
 ask() {
