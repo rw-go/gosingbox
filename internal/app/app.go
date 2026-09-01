@@ -29,6 +29,19 @@ import (
 // and a suffix like "-go" is treated as an outdated/unknown version.
 var NodeVersion = "3.4.1"
 
+// defaultIgnoredIPs mirrors the official node's DEFAULT_IGNORED_IPS: source
+// addresses that are never torn down by drop-ips / drop-users-connections
+// (loopback, unspecified, broadcast and their CIDR forms).
+var defaultIgnoredIPs = map[string]struct{}{
+	"::":              {},
+	"::1":             {},
+	"0.0.0.0":         {},
+	"0.0.0.0/0":       {},
+	"127.0.0.0/8":     {},
+	"127.0.0.1":       {},
+	"255.255.255.255": {},
+}
+
 // App is the top-level orchestrator.
 type App struct {
 	logger *slog.Logger
@@ -49,15 +62,20 @@ type App struct {
 	// preStart cleanupSockets config from the last plugin sync.
 	preMu      sync.Mutex
 	preCleanup *CleanupSocketsSpec
-	userMu     sync.Mutex
-	userTimer  *time.Timer
-	userEpoch  uint64
-	stopped    bool
+	// connection-drop whitelist from the last plugin sync (drop-ips / drop-users
+	// skip whitelisted and default-ignored source IPs, mirroring the official
+	// connection-drop state).
+	dropMu        sync.Mutex
+	dropWhitelist map[string]struct{}
+	userMu        sync.Mutex
+	userTimer     *time.Timer
+	userEpoch     uint64
+	stopped       bool
 }
 
 // New creates an App around the given embedded sing-box engine.
-func New(logger *slog.Logger, proc *singbox.Engine, st *state.State, debounceMs int) *App {
-	nft := nftables.New()
+func New(logger *slog.Logger, proc *singbox.Engine, st *state.State, debounceMs int, acceptReplyTraffic bool) *App {
+	nft := nftables.New(acceptReplyTraffic)
 	if nft.Available() {
 		if err := nft.CreateTable(); err != nil {
 			logger.Warn("nftables table setup failed", "error", err)
@@ -68,15 +86,16 @@ func New(logger *slog.Logger, proc *singbox.Engine, st *state.State, debounceMs 
 		logger.Warn("nftables unavailable (no nft binary or no CAP_NET_ADMIN); plugin firewall endpoints degraded")
 	}
 	return &App{
-		logger:     logger,
-		proc:       proc,
-		state:      st,
-		sys:        systemstats.NewReader(),
-		nft:        nft,
-		debounceMs: time.Duration(debounceMs) * time.Millisecond,
-		statsAddr:  proc.StatsAddr(),
-		clashAddr:  proc.ClashAddr(),
-		logLevel:   proc.LogLevel(),
+		logger:        logger,
+		proc:          proc,
+		state:         st,
+		sys:           systemstats.NewReader(),
+		nft:           nft,
+		debounceMs:    time.Duration(debounceMs) * time.Millisecond,
+		statsAddr:     proc.StatsAddr(),
+		clashAddr:     proc.ClashAddr(),
+		logLevel:      proc.LogLevel(),
+		dropWhitelist: map[string]struct{}{},
 	}
 }
 
@@ -276,8 +295,9 @@ func (a *App) OnlineConnections(ctx context.Context) ([]singbox.ClashConnection,
 }
 
 // DropIPs terminates every active connection whose source IP is in the given
-// list, via the clash API DELETE /connections/:id endpoint. Returns the number
-// of connections closed.
+// list, via the clash API DELETE /connections/:id endpoint. Whitelisted and
+// default-ignored source IPs are skipped. Returns the number of connections
+// closed.
 func (a *App) DropIPs(ctx context.Context, ips []string) (int, error) {
 	conns, err := a.OnlineConnections(ctx)
 	if err != nil {
@@ -289,15 +309,20 @@ func (a *App) DropIPs(ctx context.Context, ips []string) (int, error) {
 	}
 	ids := make([]string, 0, len(conns))
 	for _, c := range conns {
-		if _, ok := set[c.Metadata.SourceIP]; ok {
-			ids = append(ids, c.ID)
+		if _, ok := set[c.Metadata.SourceIP]; !ok {
+			continue
 		}
+		if a.isIgnoredIP(c.Metadata.SourceIP) {
+			continue
+		}
+		ids = append(ids, c.ID)
 	}
 	return singbox.CloseConnections(ctx, a.clashAddr, ids)
 }
 
 // DropUsers terminates every active connection for the given users (panel
-// email) via the clash API. Returns the number of connections closed.
+// email) via the clash API, skipping whitelisted/default-ignored source IPs.
+// Returns the number of connections closed.
 func (a *App) DropUsers(ctx context.Context, userIds []string) (int, error) {
 	conns, err := a.OnlineConnections(ctx)
 	if err != nil {
@@ -309,9 +334,13 @@ func (a *App) DropUsers(ctx context.Context, userIds []string) (int, error) {
 	}
 	ids := make([]string, 0, len(conns))
 	for _, c := range conns {
-		if _, ok := set[c.Metadata.User]; ok {
-			ids = append(ids, c.ID)
+		if _, ok := set[c.Metadata.User]; !ok {
+			continue
 		}
+		if a.isIgnoredIP(c.Metadata.SourceIP) {
+			continue
+		}
+		ids = append(ids, c.ID)
 	}
 	return singbox.CloseConnections(ctx, a.clashAddr, ids)
 }
@@ -466,6 +495,30 @@ func (a *App) setPreCleanup(spec *CleanupSocketsSpec) {
 	a.preMu.Unlock()
 }
 
+// setDropWhitelist replaces the connection-drop whitelist (nil/empty clears it).
+func (a *App) setDropWhitelist(ips []string) {
+	m := make(map[string]struct{}, len(ips))
+	for _, ip := range ips {
+		if ip != "" {
+			m[ip] = struct{}{}
+		}
+	}
+	a.dropMu.Lock()
+	a.dropWhitelist = m
+	a.dropMu.Unlock()
+}
+
+// isIgnoredIP reports whether a source IP is default-ignored or whitelisted.
+func (a *App) isIgnoredIP(ip string) bool {
+	if _, ok := defaultIgnoredIPs[ip]; ok {
+		return true
+	}
+	a.dropMu.Lock()
+	_, ok := a.dropWhitelist[ip]
+	a.dropMu.Unlock()
+	return ok
+}
+
 // runPreCleanup executes the preStart cleanupSockets stage before the sing-box
 // (re)start, mirroring the official node's restart sequence.
 func (a *App) runPreCleanup() {
@@ -536,9 +589,9 @@ type ConnectionDropSpec struct {
 
 // SyncPlugins applies the resolved plugin filters to nftables. It rebuilds the
 // firewall table and then populates the ingress/egress IP (and egress port)
-// sets. Torrent detection and connection-drop are not implemented by the
-// sing-box data plane (documented gaps): torrent reports stay empty and
-// connection-drop whitelisting has no effect.
+// sets. Torrent detection is not implemented by the sing-box data plane
+// (torrent reports stay empty); the connection-drop whitelist is applied to
+// drop-ips / drop-users-connections.
 func (a *App) SyncPlugins(p PluginSpec) bool {
 	ok := true
 	var cleanup *CleanupSocketsSpec
@@ -548,6 +601,12 @@ func (a *App) SyncPlugins(p PluginSpec) bool {
 	a.setPreCleanup(cleanup)
 
 	sharedMap := a.resolveSharedLists(p.SharedLists)
+
+	if p.ConnectionDrop != nil && p.ConnectionDrop.Enabled {
+		a.setDropWhitelist(a.resolveIpList(p.ConnectionDrop.WhitelistIPs, sharedMap))
+	} else {
+		a.setDropWhitelist(nil)
+	}
 
 	if err := a.nft.CreateTable(); err != nil {
 		a.logger.Warn("plugin sync: recreate tables failed", "error", err)

@@ -29,9 +29,10 @@ const (
 
 // Manager wraps the nft CLI.
 type Manager struct {
-	mu        sync.Mutex
-	bin       string
-	available bool
+	mu                 sync.Mutex
+	bin                string
+	available          bool
+	acceptReplyTraffic bool
 }
 
 // BlockEntry is a single IP block request (mirrors the panel's block-ips
@@ -41,15 +42,17 @@ type BlockEntry struct {
 	Timeout int    `json:"timeout"`
 }
 
-// New probes for the nft binary and CAP_NET_ADMIN.
-func New() *Manager {
+// New probes for the nft binary and CAP_NET_ADMIN. acceptReplyTraffic mirrors
+// the official NFTABLES_ACCEPT_REPLY_TRAFFIC option: when true, the egress
+// filter accepts established/related flows so reply traffic is not dropped.
+func New(acceptReplyTraffic bool) *Manager {
 	bin := "nft"
 	if path, err := exec.LookPath(bin); err == nil {
 		bin = path
 	} else {
 		return &Manager{bin: bin, available: false}
 	}
-	m := &Manager{bin: bin, available: true}
+	m := &Manager{bin: bin, available: true, acceptReplyTraffic: acceptReplyTraffic}
 	// Probe capability by listing the ruleset; a non-root/CAP_NET_ADMIN process
 	// will fail here.
 	if err := m.run("list", "tables"); err != nil {
@@ -133,6 +136,15 @@ func (m *Manager) CreateTable() error {
 			return err
 		}
 	}
+	// Reply-traffic allow: accept established/related flows before the egress
+	// drop rules (NFTABLES_ACCEPT_REPLY_TRAFFIC). Without this, dropping an
+	// egress IP/port also tears down reply traffic of existing connections.
+	if m.acceptReplyTraffic {
+		if err := m.run("add", "rule", "inet", tableName, "output", "ct state established,related accept"); err != nil {
+			return err
+		}
+	}
+
 	// Egress drop rules (output) for egress sets.
 	for _, set := range []string{setEgress, setEgress6} {
 		if err := m.run("add", "rule", "inet", tableName, "output", ipLiteral(set)+" daddr @"+set+" drop"); err != nil {

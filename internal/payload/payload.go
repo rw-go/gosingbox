@@ -33,7 +33,10 @@ type Payload struct {
 	NodeCertPEM  string // PEM node certificate
 	CACertPEM    string // PEM CA certificate
 	JWTPublicKey *rsa.PublicKey
-	RawJSON      map[string]any
+	// JWTPublicKeyPEM is the normalized PEM of the JWT public key. It is kept
+	// alongside the parsed key so the private TLS SNI can be derived (>= 3.3.0).
+	JWTPublicKeyPEM string
+	RawJSON         map[string]any
 }
 
 // Parse decodes SECRET_KEY into node identity material.
@@ -87,7 +90,8 @@ func parseObject(obj map[string]any) (*Payload, error) {
 	p.CACertPEM = normalizePem(caCert)
 
 	if jwtPub != "" {
-		key, err := parseRSAPublicKeyPEM([]byte(normalizePem(jwtPub)))
+		p.JWTPublicKeyPEM = normalizePem(jwtPub)
+		key, err := parseRSAPublicKeyPEM([]byte(p.JWTPublicKeyPEM))
 		if err != nil {
 			return nil, fmt.Errorf("parse jwt public key: %w", err)
 		}

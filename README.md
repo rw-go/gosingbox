@@ -14,10 +14,15 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
   增删不重启监听器、不中断其他连接。
 - 统计走 v2ray_api gRPC；在线用户/单用户 IP/最后活动时间走 clash_api `/connections`（`userId` = 用户 email）。
 - **断连（connection-drop）**：`drop-ips` / `drop-users-connections` 走 clash_api
-  `DELETE /connections/:id` 关闭匹配连接，无需 `sockdestroy`/`CAP_NET_ADMIN`。
+  `DELETE /connections/:id` 关闭匹配连接，无需 `sockdestroy`/`CAP_NET_ADMIN`；支持
+  `connectionDrop.whitelistIps` 白名单 + 默认忽略 IP（回环/未指定/广播）。
+- **私有 SNI 校验**：`SNI_VERIFICATION=true` 时按 SECRET_KEY 派生的私有 SNI 校验 mTLS
+  握手（HKDF-SHA256，对齐官方 `decode-servername.util.ts`）。
 - **preStart**：`cleanupSockets` 在每次 sing-box (re)start 前清理遗留 unix socket。
+- **单实例锁**：抽象 unix socket 防止同机多实例。
 - 一键安装/升级/卸载（OpenRC / systemd）。
-- geo 检测（内置 geocheck）、ASN shared lists、nftables ingress/egress filter。
+- geo 检测（内置 geocheck）、ASN shared lists、nftables ingress/egress filter
+  （含 `NFTABLES_ACCEPT_REPLY_TRAFFIC` 回程流量放行）。
 
 ## 一键安装（OpenRC / systemd）
 
@@ -61,6 +66,8 @@ Alpine 用 OpenRC，Debian/Ubuntu/Arch 等用 systemd。
 | `SINGBOX_LISTEN` | 空（双栈） | 监听地址覆盖；`0.0.0.0` 强制 IPv4 |
 | `SINGBOX_GEO_DIR` | — | geosite/geoip rule-set(.srs) 下载缓存目录 |
 | `ASN_INDEX_PATH` | — | asn-prefixes.json（remnawave/asn-index，ASN shared list 用） |
+| `SNI_VERIFICATION` | `false` | 按 SECRET_KEY 派生私有 SNI 并校验 mTLS 握手 |
+| `NFTABLES_ACCEPT_REPLY_TRAFFIC` | `false` | egress filter 放行已有连接的回程流量（conntrack established/related） |
 
 其余见 `scripts/go-standalone/env.example`。gosingbox 使用内嵌 sing-box，不使用外部
 sing-box 可执行文件、外部配置文件或独立 sing-box 日志目录。

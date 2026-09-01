@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -53,7 +54,7 @@ func main() {
 	})
 
 	st := state.New()
-	application := app.New(logger, proc, st, cfg.SingboxDebounceMs)
+	application := app.New(logger, proc, st, cfg.SingboxDebounceMs, cfg.NftablesAcceptReplyTraffic)
 
 	if cfg.AsnIndexPath != "" {
 		if idx, err := asn.Load(cfg.AsnIndexPath); err != nil {
@@ -81,7 +82,25 @@ func main() {
 	application.Stop()
 }
 
+// instanceLock holds the abstract unix socket used to prevent running two node
+// instances at once (mirrors the official acquire-instance-lock "rwnode-lock").
+var instanceLock net.Listener
+
+// acquireInstanceLock binds an abstract-socket lock. On EADDRINUSE another
+// instance is already running; like the official node we only log (never exit)
+// because a stale socket cannot outlive its process.
+func acquireInstanceLock(logger *slog.Logger) {
+	ln, err := net.Listen("unix", "\x00rwnode-lock")
+	if err != nil {
+		logger.Error("another node instance may already be running", "error", err)
+		return
+	}
+	instanceLock = ln
+}
+
 func runServer(logger *slog.Logger, cfg *config.Config, application *app.App, proc *singbox.Engine) {
+	acquireInstanceLock(logger)
+
 	if cfg.SecretKey == "" {
 		logger.Error("SECRET_KEY is required in serve mode")
 		os.Exit(1)
@@ -105,6 +124,7 @@ func runServer(logger *slog.Logger, cfg *config.Config, application *app.App, pr
 		Payload:           p,
 		Logger:            logger,
 		InternalRESTToken: cfg.InternalRESTToken,
+		VerifySNI:         cfg.SNIVerification,
 	}
 	internal := &server.ServerFactory{
 		Mux:               internalMux,

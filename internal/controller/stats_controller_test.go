@@ -21,7 +21,7 @@ import (
 // and never self-heals.
 func TestSystemStatsReturnsOfficialErrorWhenDataPlaneDown(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := app.New(logger, singbox.NewEngine(singbox.Options{}), state.New(), 5000)
+	a := app.New(logger, singbox.NewEngine(singbox.Options{}), state.New(), 5000, false)
 	s := NewStats(a, logger)
 
 	req := httptest.NewRequest(http.MethodGet, "/node/stats/get-system-stats", nil)

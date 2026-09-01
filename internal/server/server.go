@@ -4,9 +4,11 @@ package server
 
 import (
 	"compress/gzip"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -30,6 +32,9 @@ type ServerFactory struct {
 	Logger            *slog.Logger
 	InternalRESTToken string
 	InternalOnly      bool
+	// VerifySNI enables private-SNI checks on the mTLS handshake (the client
+	// SNI must match the value derived from the SECRET_KEY material).
+	VerifySNI bool
 }
 
 // ListenAndServe builds the full mTLS + JWT handler and starts listening.
@@ -45,7 +50,30 @@ func (f *ServerFactory) ListenAndServe(addr string) error {
 			if !caPool.AppendCertsFromPEM([]byte(f.Payload.CACertPEM)) {
 				return errMsg("failed to parse CA cert")
 			}
-			server.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}, ClientCAs: caPool, ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS13}
+			tlsCfg := &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				ClientCAs:    caPool,
+				ClientAuth:   tls.RequireAndVerifyClientCert,
+				MinVersion:   tls.VersionTLS13,
+			}
+			if f.VerifySNI {
+				expected, err := payload.DeriveSNI(f.Payload.CACertPEM, f.Payload.JWTPublicKeyPEM)
+				if err != nil {
+					return err
+				}
+				tlsCfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+					// A client that sends no SNI is still subject to mTLS,
+					// matching the official SNICallback semantics.
+					if hello.ServerName == "" {
+						return nil, nil
+					}
+					if subtle.ConstantTimeCompare([]byte(hello.ServerName), []byte(expected)) != 1 {
+						return nil, fmt.Errorf("unknown sni")
+					}
+					return nil, nil
+				}
+			}
+			server.TLSConfig = tlsCfg
 			return server.ListenAndServeTLS("", "")
 		}
 		return server.ListenAndServe()
