@@ -22,6 +22,37 @@ var (
 	geocheckRunning bool
 )
 
+// cappedBuffer bounds total output and cancels the command's context as soon as
+// the limit is exceeded, so a misbehaving helper cannot inflate memory.
+type cappedBuffer struct {
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	max      int
+	cancel   context.CancelFunc
+	exceeded bool
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.buf.Len()+len(p) > c.max {
+		if !c.exceeded {
+			c.exceeded = true
+			if c.cancel != nil {
+				c.cancel()
+			}
+		}
+		return 0, fmt.Errorf("output exceeds %d bytes", c.max)
+	}
+	return c.buf.Write(p)
+}
+
+func (c *cappedBuffer) Bytes() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Bytes()
+}
+
 func geocheckBin() string {
 	if v := os.Getenv("GEOCHECK_BIN_PATH"); v != "" {
 		return v
@@ -65,20 +96,23 @@ func geocheckRun(ip, iface string) (map[string]any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(geocheckTimeoutMs)*time.Millisecond)
 	defer cancel()
 
+	var out cappedBuffer
+	out.max = geocheckMaxOutput
+	out.cancel = cancel
+
 	cmd := exec.CommandContext(ctx, geocheckBin(), args...)
-	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 
 	err := cmd.Run()
+	if out.exceeded {
+		return nil, fmt.Errorf("Geocheck output too large")
+	}
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("Geocheck via %s exceeded %dms and was killed.", orDefaultRoute(bindTo), geocheckTimeoutMs)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("Geocheck via %s failed: %v", orDefaultRoute(bindTo), err)
-	}
-	if out.Len() > geocheckMaxOutput {
-		return nil, fmt.Errorf("Geocheck output too large")
 	}
 
 	var report map[string]any

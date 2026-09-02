@@ -46,6 +46,16 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: parseLogLevel(cfg.LogLevel)}))
 
+	// Acquire the single-instance lock before initializing nftables or the data
+	// plane so a second instance cannot interfere with the first.
+	if *serveMode {
+		if err := acquireInstanceLock(logger); err != nil {
+			logger.Error("another instance is already running", "error", err)
+			os.Exit(1)
+		}
+		defer instanceLock.Close()
+	}
+
 	proc := singbox.NewEngine(singbox.Options{
 		StatsAddr: cfg.SingboxStatsAddr,
 		ClashAddr: cfg.SingboxClashAddr,
@@ -86,21 +96,19 @@ func main() {
 // instances at once (mirrors the official acquire-instance-lock "rwnode-lock").
 var instanceLock net.Listener
 
-// acquireInstanceLock binds an abstract-socket lock. On EADDRINUSE another
-// instance is already running; like the official node we only log (never exit)
-// because a stale socket cannot outlive its process.
-func acquireInstanceLock(logger *slog.Logger) {
+// acquireInstanceLock binds an abstract-socket lock. On failure another instance
+// is already running; the error must cause the caller to abort startup.
+func acquireInstanceLock(logger *slog.Logger) error {
 	ln, err := net.Listen("unix", "\x00rwnode-lock")
 	if err != nil {
-		logger.Error("another node instance may already be running", "error", err)
-		return
+		return err
 	}
 	instanceLock = ln
+	logger.Debug("acquired instance lock")
+	return nil
 }
 
 func runServer(logger *slog.Logger, cfg *config.Config, application *app.App, proc *singbox.Engine) {
-	acquireInstanceLock(logger)
-
 	if cfg.SecretKey == "" {
 		logger.Error("SECRET_KEY is required in serve mode")
 		os.Exit(1)

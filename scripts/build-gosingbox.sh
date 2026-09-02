@@ -81,5 +81,7 @@ EOF
 
 (cd "$STAGE" && tar -czf "$OUT_DIR/${PKG_NAME}.tar.gz" "$PKG_NAME")
 
+(cd "$OUT_DIR" && sha256sum "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256")
+
 echo "==> DONE: $OUT_DIR/${PKG_NAME}.tar.gz"
 du -h "$OUT_DIR/${PKG_NAME}.tar.gz"

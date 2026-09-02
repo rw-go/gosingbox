@@ -106,6 +106,9 @@ func (a *App) Start(raw []byte) error {
 
 // StartWithForce applies a panel config. Repeated identical starts reuse the
 // running data plane unless the panel explicitly requests a restart.
+//
+// The config is parsed, transpiled and applied before any state is committed:
+// on failure, the previous config/users/inbound-tags all remain intact.
 func (a *App) StartWithForce(raw []byte, force bool) error {
 	a.userMu.Lock()
 	a.stopped = false
@@ -123,14 +126,34 @@ func (a *App) StartWithForce(raw []byte, force bool) error {
 			return nil
 		}
 	}
-	a.state.SetRawConfig(raw)
-	return a.applyToSingbox()
-}
 
-// applyToSingbox transpiles the current state and applies it to sing-box.
-func (a *App) applyToSingbox() error {
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return fmt.Errorf("parse panel config: %w", err)
+	}
+	vless := transpiler.UsersFromConfig(cfg)
+	ss := transpiler.SsUsersFromConfig(cfg)
+
+	res, err := transpiler.Transpile(raw, a.statsAddr, a.clashAddr, a.logLevel, vless, ss)
+	if err != nil {
+		return fmt.Errorf("transpile: %w", err)
+	}
+
 	a.runPreCleanup()
 
+	if err := a.proc.ApplyConfig(res.Config); err != nil {
+		return err
+	}
+
+	// Only commit state after the new config is fully applied.
+	a.state.SetRawConfig(raw)
+	a.state.SetInboundTags(inboundTagsOf(res.Config))
+	return nil
+}
+
+// applyToSingbox (re)builds and applies the already-committed state to sing-box.
+// It is used by the user hot-swap fallback path.
+func (a *App) applyToSingbox() error {
 	raw := a.state.RawConfig()
 	if raw == nil {
 		return fmt.Errorf("no panel config available")
@@ -141,13 +164,14 @@ func (a *App) applyToSingbox() error {
 		return fmt.Errorf("transpile: %w", err)
 	}
 
-	// Record inbound tags for stats/lookup.
-	a.state.SetInboundTags(inboundTagsOf(res.Config))
+	a.runPreCleanup()
 
-	err = a.proc.ApplyConfig(res.Config)
-	if err != nil {
+	if err := a.proc.ApplyConfig(res.Config); err != nil {
 		return err
 	}
+
+	// Record inbound tags for stats/lookup only after a successful apply.
+	a.state.SetInboundTags(inboundTagsOf(res.Config))
 	return nil
 }
 

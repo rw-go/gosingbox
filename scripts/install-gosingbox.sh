@@ -27,7 +27,7 @@ set -eu
 
 # Installer version. Bump the patch number on EVERY change to this script so
 # users can tell the CDN stopped serving the latest revision. (See AGENTS.md.)
-INSTALLER_VERSION="3.4.1.6"
+INSTALLER_VERSION="3.4.1.7"
 
 OWNER="${GOSINGBOX_RELEASE_OWNER:-rwnode}"
 REPO="${GOSINGBOX_RELEASE_REPO:-rwnode-gosingbox}"
@@ -140,6 +140,9 @@ download_package() {
 
     log "downloading $DL_URL"
     curl -fsSL -o "$TMP/$TARBALL" "$DL_URL" || die "download failed; is the release published?"
+    log "verifying checksum"
+    curl -fsSL -o "$TMP/$TARBALL.sha256" "${DL_URL}.sha256" || die "checksum download failed"
+    (cd "$TMP" && sha256sum -c "${TARBALL}.sha256") || die "checksum verification failed"
     log "extracting to $TMP"
     mkdir -p "$TMP/pkg"
     tar -xzf "$TMP/$TARBALL" -C "$TMP/pkg"

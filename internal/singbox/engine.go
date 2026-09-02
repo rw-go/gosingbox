@@ -28,11 +28,12 @@ type Engine struct {
 	logLevel  string
 	version   string
 
-	mu     sync.Mutex
-	ctx    context.Context
-	cancel context.CancelFunc
-	box    *box.Box
-	online bool
+	mu            sync.Mutex
+	ctx           context.Context
+	cancel        context.CancelFunc
+	box           *box.Box
+	online        bool
+	currentConfig map[string]any // last successfully applied config (for rollback)
 }
 
 // Status is a runtime snapshot.
@@ -101,29 +102,24 @@ func (e *Engine) Status() Status {
 	return Status{Up: e.online, Pid: 0, Version: e.version}
 }
 
-// ApplyConfig transpile output (already JSON-marshalable) into an option.Options
-// and (re)start the embedded box. Because this path fully re-binds listeners it
-// is the "restart" fallback; user changes should use UpdateVLESSUsers instead.
-func (e *Engine) ApplyConfig(config map[string]any) error {
+// parseOptions marshals a config map into sing-box options without touching the
+// running instance.
+func (e *Engine) parseOptions(config map[string]any) (context.Context, option.Options, error) {
 	data, err := json.Marshal(config)
 	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
+		return nil, option.Options{}, fmt.Errorf("marshal config: %w", err)
 	}
-
 	ctx := include.Context(context.Background())
 	opts, err := singJSON.UnmarshalExtendedContext[option.Options](ctx, data)
 	if err != nil {
-		return fmt.Errorf("parse sing-box options: %w", err)
+		return nil, option.Options{}, fmt.Errorf("parse sing-box options: %w", err)
 	}
+	return ctx, opts, nil
+}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	// Stop the previous instance first so listeners release their ports.
-	if e.box != nil {
-		e.stopLocked()
-	}
-
+// startLocked builds and starts a sing-box instance from the given options and
+// makes it the current one. The caller must hold e.mu.
+func (e *Engine) startLocked(ctx context.Context, opts option.Options) error {
 	instCtx, cancel := context.WithCancel(ctx)
 	instance, err := box.New(box.Options{Context: instCtx, Options: opts})
 	if err != nil {
@@ -135,11 +131,54 @@ func (e *Engine) ApplyConfig(config map[string]any) error {
 		cancel()
 		return fmt.Errorf("start sing-box: %w", err)
 	}
-
 	e.ctx = instCtx
 	e.cancel = cancel
 	e.box = instance
 	e.online = true
+	return nil
+}
+
+// ApplyConfig transpile output (already JSON-marshalable) into an option.Options
+// and (re)start the embedded box. Because this path fully re-binds listeners it
+// is the "restart" fallback; user changes should use UpdateVLESSUsers instead.
+//
+// The new config is parsed before the previous instance is stopped, and on a
+// create/start failure the previous instance is restored best-effort so a bad
+// config never leaves the node fully down.
+func (e *Engine) ApplyConfig(config map[string]any) error {
+	ctx, opts, err := e.parseOptions(config)
+	if err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	prev := e.currentConfig
+
+	// Stop the previous instance first so listeners release their ports.
+	if e.box != nil {
+		e.stopLocked()
+	}
+
+	if err := e.startLocked(ctx, opts); err != nil {
+		if prev != nil {
+			if rctx, ropts, rerr := e.parseOptions(prev); rerr == nil {
+				if serr := e.startLocked(rctx, ropts); serr != nil {
+					e.logger.Warn("rollback to previous config failed", "error", serr)
+				} else {
+					e.currentConfig = prev
+					return fmt.Errorf("apply config: %w (rolled back)", err)
+				}
+			} else {
+				e.logger.Warn("rollback config parse failed", "error", rerr)
+			}
+		}
+		e.currentConfig = nil
+		return fmt.Errorf("apply config: %w", err)
+	}
+
+	e.currentConfig = config
 	return nil
 }
 
