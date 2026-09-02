@@ -26,6 +26,24 @@ func New() *State {
 	return &State{}
 }
 
+// CommitConfig atomically commits a successfully applied panel config together
+// with its already-validated users and inbound tags.
+func (s *State) CommitConfig(raw []byte, vlessUsers []transpiler.VlessUser, ssUsers []transpiler.SsUser, inboundTags []string) {
+	configCopy := make([]byte, len(raw))
+	copy(configCopy, raw)
+	vlessCopy := append([]transpiler.VlessUser(nil), vlessUsers...)
+	ssCopy := append([]transpiler.SsUser(nil), ssUsers...)
+	tagsCopy := append([]string(nil), inboundTags...)
+
+	s.mu.Lock()
+	s.rawConfig = configCopy
+	s.hasConfig = true
+	s.vlessUsers = vlessCopy
+	s.ssUsers = ssCopy
+	s.inboundTags = tagsCopy
+	s.mu.Unlock()
+}
+
 // SetRawConfig stores the panel xray config and rebuilds the user set from it.
 func (s *State) SetRawConfig(raw []byte) {
 	s.mu.Lock()

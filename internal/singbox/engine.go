@@ -205,6 +205,7 @@ func (e *Engine) UpdateVLESSUsers(tags []string, users []option.VLESSUser) (int,
 			if err := u.UpdateUsers(users); err != nil {
 				return updated, fmt.Errorf("update users on %q: %w", tag, err)
 			}
+			e.updateCurrentUsersLocked("vless", tag, users)
 			updated++
 		}
 	}
@@ -235,10 +236,77 @@ func (e *Engine) UpdateSSUsers(tags []string, users []option.ShadowsocksUser) (i
 			if err := u.UpdateUsersByOptions(users); err != nil {
 				return updated, fmt.Errorf("update ss users on %q: %w", tag, err)
 			}
+			e.updateCurrentUsersLocked("shadowsocks", tag, users)
 			updated++
 		}
 	}
 	return updated, nil
+}
+
+// updateCurrentUsersLocked keeps the rollback config aligned with successful
+// in-place user updates. The caller must hold e.mu.
+func (e *Engine) updateCurrentUsersLocked(inboundType, tag string, users any) {
+	if e.currentConfig == nil {
+		return
+	}
+	inbounds, ok := e.currentConfig["inbounds"].([]any)
+	if !ok {
+		return
+	}
+	for _, value := range inbounds {
+		inbound, ok := value.(map[string]any)
+		if !ok || inbound["type"] != inboundType || inbound["tag"] != tag {
+			continue
+		}
+		inbound["users"] = users
+		e.refreshCurrentStatUsersLocked()
+		return
+	}
+}
+
+// refreshCurrentStatUsersLocked rebuilds the rollback config's v2ray stats user
+// list from the current inbound users. The caller must hold e.mu.
+func (e *Engine) refreshCurrentStatUsersLocked() {
+	inbounds, ok := e.currentConfig["inbounds"].([]any)
+	if !ok {
+		return
+	}
+	var names []string
+	for _, value := range inbounds {
+		inbound, ok := value.(map[string]any)
+		if !ok || (inbound["type"] != "vless" && inbound["type"] != "shadowsocks") {
+			continue
+		}
+		data, err := json.Marshal(inbound["users"])
+		if err != nil {
+			continue
+		}
+		var users []struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(data, &users) != nil {
+			continue
+		}
+		for _, user := range users {
+			if user.Name != "" {
+				names = append(names, user.Name)
+			}
+		}
+	}
+
+	experimental, ok := e.currentConfig["experimental"].(map[string]any)
+	if !ok {
+		return
+	}
+	v2rayAPI, ok := experimental["v2ray_api"].(map[string]any)
+	if !ok {
+		return
+	}
+	stats, ok := v2rayAPI["stats"].(map[string]any)
+	if !ok {
+		return
+	}
+	stats["users"] = names
 }
 
 func (e *Engine) stopLocked() {

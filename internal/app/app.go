@@ -44,13 +44,14 @@ var defaultIgnoredIPs = map[string]struct{}{
 
 // App is the top-level orchestrator.
 type App struct {
-	logger *slog.Logger
-	state  *state.State
-	proc   *singbox.Engine
-	cfg    *singbox.Options
-	sys    *systemstats.Reader
-	nft    *nftables.Manager
-	asnIdx *asn.Index
+	logger   *slog.Logger
+	state    *state.State
+	proc     *singbox.Engine
+	cfg      *singbox.Options
+	sys      *systemstats.Reader
+	nft      *nftables.Manager
+	asnIdx   *asn.Index
+	configMu sync.Mutex
 
 	debounceMs time.Duration
 
@@ -110,6 +111,9 @@ func (a *App) Start(raw []byte) error {
 // The config is parsed, transpiled and applied before any state is committed:
 // on failure, the previous config/users/inbound-tags all remain intact.
 func (a *App) StartWithForce(raw []byte, force bool) error {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
 	a.userMu.Lock()
 	a.stopped = false
 	a.userEpoch++
@@ -146,14 +150,19 @@ func (a *App) StartWithForce(raw []byte, force bool) error {
 	}
 
 	// Only commit state after the new config is fully applied.
-	a.state.SetRawConfig(raw)
-	a.state.SetInboundTags(inboundTagsOf(res.Config))
+	a.state.CommitConfig(raw, vless, ss, inboundTagsOf(res.Config))
 	return nil
 }
 
 // applyToSingbox (re)builds and applies the already-committed state to sing-box.
 // It is used by the user hot-swap fallback path.
 func (a *App) applyToSingbox() error {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+	return a.applyToSingboxLocked()
+}
+
+func (a *App) applyToSingboxLocked() error {
 	raw := a.state.RawConfig()
 	if raw == nil {
 		return fmt.Errorf("no panel config available")
@@ -208,9 +217,11 @@ func (a *App) UserChanged() {
 			}
 			a.userTimer = nil
 			a.userMu.Unlock()
+			a.configMu.Lock()
+			defer a.configMu.Unlock()
 			if err := a.applyUserHotSwap(); err != nil {
 				a.logger.Error("hot-swap users failed; falling back to full apply", "error", err)
-				if err := a.applyToSingbox(); err != nil {
+				if err := a.applyToSingboxLocked(); err != nil {
 					a.logger.Error("full apply fallback failed", "error", err)
 				}
 			}
@@ -256,18 +267,24 @@ func (a *App) applyUserHotSwap() error {
 
 // AddUser adds a VLESS user to desired state and schedules apply.
 func (a *App) AddUser(u transpiler.VlessUser) {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
 	a.state.AddUser(u)
 	a.UserChanged()
 }
 
 // AddSsUser adds a Shadowsocks 2022 user to desired state and schedules apply.
 func (a *App) AddSsUser(u transpiler.SsUser) {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
 	a.state.AddSsUser(u)
 	a.UserChanged()
 }
 
 // RemoveUser removes a VLESS user by UUID and schedules apply.
 func (a *App) RemoveUser(uuid string) bool {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
 	if !a.state.RemoveUser(uuid) {
 		return false
 	}
@@ -277,6 +294,8 @@ func (a *App) RemoveUser(uuid string) bool {
 
 // RemoveSsUser removes a Shadowsocks 2022 user by name and schedules apply.
 func (a *App) RemoveSsUser(name string) bool {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
 	if !a.state.RemoveSsUser(name) {
 		return false
 	}
@@ -286,6 +305,8 @@ func (a *App) RemoveSsUser(name string) bool {
 
 // Stop shuts down the sing-box process.
 func (a *App) Stop() {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
 	a.userMu.Lock()
 	a.stopped = true
 	a.userEpoch++
