@@ -653,9 +653,11 @@ func buildRouting(cfg map[string]any, validOutbound map[string]bool) (route map[
 				}
 			case strings.HasPrefix(d, "geosite:"):
 				name := strings.TrimPrefix(d, "geosite:")
-				tag := "geosite-" + name
-				ruleSetRefs = append(ruleSetRefs, tag)
-				ruleSetTags[tag] = struct{ Kind, Name string }{Kind: "geosite", Name: name}
+				if isValidGeoRuleSetName(name) {
+					tag := "geosite-" + name
+					ruleSetRefs = append(ruleSetRefs, tag)
+					ruleSetTags[tag] = struct{ Kind, Name string }{Kind: "geosite", Name: name}
+				}
 			case strings.HasPrefix(d, "regexp:"):
 				if regex := strings.TrimPrefix(d, "regexp:"); regex != "" {
 					rule["domain_regex"] = appendString(rule["domain_regex"], regex)
@@ -677,9 +679,11 @@ func buildRouting(cfg map[string]any, validOutbound map[string]bool) (route map[
 				rule["ip_is_private"] = true
 			case strings.HasPrefix(ip, "geoip:"):
 				name := strings.TrimPrefix(ip, "geoip:")
-				tag := "geoip-" + name
-				ruleSetRefs = append(ruleSetRefs, tag)
-				ruleSetTags[tag] = struct{ Kind, Name string }{Kind: "geoip", Name: name}
+				if isValidGeoRuleSetName(name) {
+					tag := "geoip-" + name
+					ruleSetRefs = append(ruleSetRefs, tag)
+					ruleSetTags[tag] = struct{ Kind, Name string }{Kind: "geoip", Name: name}
+				}
 			default:
 				if ip != "" {
 					rule["ip_cidr"] = appendString(rule["ip_cidr"], ip)
@@ -800,6 +804,21 @@ func validPortRange(value string) bool {
 	start, errStart := strconv.Atoi(strings.TrimSpace(parts[0]))
 	end, errEnd := strconv.Atoi(strings.TrimSpace(parts[1]))
 	return errStart == nil && errEnd == nil && start >= 1 && end <= 65535 && start <= end
+}
+
+// isValidGeoRuleSetName validates that the rule set name consists solely of safe
+// alphanumeric, hyphen, or underscore characters, mitigating path traversal.
+func isValidGeoRuleSetName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func geoRuleSetURL(kind, name string) string {

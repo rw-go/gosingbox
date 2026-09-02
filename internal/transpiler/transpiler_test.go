@@ -2,6 +2,7 @@ package transpiler
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -104,5 +105,32 @@ func TestSplitPortsSupportsXrayForms(t *testing.T) {
 	ports, ranges = splitPorts(float64(8443))
 	if len(ports) != 1 || ports[0] != 8443 || len(ranges) != 0 {
 		t.Fatalf("numeric port = %#v, %#v", ports, ranges)
+	}
+}
+
+func TestBuildRoutingFiltersInvalidGeoRuleSetNames(t *testing.T) {
+	cfg := map[string]any{
+		"routing": map[string]any{"rules": []any{
+			map[string]any{
+				"domain":      []any{"geosite:cn", "geosite:../../evil", "geosite:valid-name_1"},
+				"ip":          []any{"geoip:private", "geoip:../bad/path", "geoip:cn"},
+				"outboundTag": "direct",
+			},
+		}},
+	}
+	route, _ := buildRouting(cfg, map[string]bool{"direct": true})
+	if route == nil {
+		t.Fatal("route is nil")
+	}
+	ruleSets, ok := route["rule_set"].([]any)
+	if !ok || len(ruleSets) == 0 {
+		t.Fatalf("expected rule sets, got %#v", route["rule_set"])
+	}
+	for _, rsAny := range ruleSets {
+		rs := rsAny.(map[string]any)
+		tag := rs["tag"].(string)
+		if strings.Contains(tag, "..") || strings.Contains(tag, "/") {
+			t.Fatalf("invalid rule set tag leaked: %s", tag)
+		}
 	}
 }

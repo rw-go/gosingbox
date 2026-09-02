@@ -205,7 +205,8 @@ func (f *ServerFactory) jwtWrap(next http.Handler) http.Handler {
 
 func (f *ServerFactory) internalTokenWrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if f.InternalRESTToken == "" || r.URL.Query().Get("token") != f.InternalRESTToken {
+		token := r.URL.Query().Get("token")
+		if f.InternalRESTToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(f.InternalRESTToken)) != 1 {
 			if hijacker, ok := w.(http.Hijacker); ok {
 				if conn, _, err := hijacker.Hijack(); err == nil {
 					_ = conn.Close()
