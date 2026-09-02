@@ -41,6 +41,39 @@ wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts
 系统（OpenRC / systemd）、安装 `curl nftables`、下载解包二进制、写 env、生成服务并自启。
 Alpine 用 OpenRC，Debian/Ubuntu/Arch 等用 systemd。
 
+## Docker 安装（推荐用于通用 Linux）
+
+Docker 版使用单进程 Alpine 镜像（内嵌 sing-box，不包含 Node.js、Xray 或 s6），默认镜像：
+`rwnode/gosingbox:latest`。
+
+一键安装：
+
+```bash
+wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox-docker.sh | sh
+```
+
+升级或卸载：
+
+```bash
+wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox-docker.sh | sh -s -- upgrade
+wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox-docker.sh | sh -s -- uninstall
+# 连同配置和数据卷全部删除：
+wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox-docker.sh | sh -s -- uninstall-full
+```
+
+手动使用 Compose：
+
+```bash
+export NODE_PORT=2222
+export SECRET_KEY='面板下发的 SECRET_KEY'
+docker compose up -d
+docker logs -f gosingbox
+```
+
+Docker 版固定使用 `network_mode: host`，因为 Panel 会动态下发用户入站端口，且在线 IP
+统计需要保留真实源地址。启用 nftables 插件时需要 `NET_ADMIN`；compose 已默认添加。镜像
+不设置硬内存上限，生产环境如需限制建议不低于 512MB。
+
 ## 构建
 
 ```bash

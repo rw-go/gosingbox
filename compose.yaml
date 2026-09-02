@@ -1,0 +1,30 @@
+services:
+  gosingbox:
+    image: rwnode/gosingbox:latest
+    container_name: gosingbox
+    hostname: gosingbox
+    network_mode: host
+    restart: always
+    cap_add:
+      - NET_ADMIN
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    environment:
+      NODE_PORT: "${NODE_PORT:-2222}"
+      SECRET_KEY: "${SECRET_KEY:?SECRET_KEY is required}"
+      SINGBOX_LOG_LEVEL: "${SINGBOX_LOG_LEVEL:-warn}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      NFTABLES_ACCEPT_REPLY_TRAFFIC: "${NFTABLES_ACCEPT_REPLY_TRAFFIC:-false}"
+      SNI_VERIFICATION: "${SNI_VERIFICATION:-false}"
+    volumes:
+      - gosingbox-data:/var/lib/gosingbox
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "3"
+
+volumes:
+  gosingbox-data:

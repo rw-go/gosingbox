@@ -1,0 +1,12 @@
+.git
+.github
+dist-go
+logs
+*.log
+.env
+.env.*
+Dockerfile*
+compose.yaml
+README.md
+UNIMPLEMENTED.md
+scripts/go-standalone
