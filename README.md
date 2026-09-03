@@ -27,14 +27,14 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 ## 一键安装（OpenRC / systemd）
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox.sh | sh
+wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox.sh | sh
 ```
 
 或带参数：
 
 ```bash
 # 查看安装器版本（判断 CDN 是否缓存旧版）
-wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox.sh | sh -s -- --version
+wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox.sh | sh -s -- --version
 ```
 
 脚本会询问 `NODE_PORT`（默认 2222）与 `SECRET_KEY`（面板下发），自动检测 init
@@ -49,16 +49,16 @@ Docker 版使用单进程 Alpine 镜像（内嵌 sing-box，不包含 Node.js、
 一键安装：
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox-docker.sh | sh
+wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox-docker.sh | sh
 ```
 
 升级或卸载：
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox-docker.sh | sh -s -- upgrade
-wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox-docker.sh | sh -s -- uninstall
+wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox-docker.sh | sh -s -- upgrade
+wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox-docker.sh | sh -s -- uninstall
 # 连同配置和数据卷全部删除：
-wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox-docker.sh | sh -s -- uninstall-full
+wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox-docker.sh | sh -s -- uninstall-full
 ```
 
 手动使用 Compose：

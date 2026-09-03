@@ -12,7 +12,7 @@
 #   -h | --help        — usage
 #
 # Usage (as root):
-#   wget -qO- https://raw.githubusercontent.com/rwnode/rwnode-gosingbox/main/scripts/install-gosingbox.sh | sh
+#   wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox.sh | sh
 #   wget -qO- ... | sh -s -- upgrade
 #   wget -qO- ... | sh -s -- uninstall
 #
