@@ -27,7 +27,7 @@ set -eu
 
 # Installer version. Bump the patch number on EVERY change to this script so
 # users can tell the CDN stopped serving the latest revision. (See AGENTS.md.)
-INSTALLER_VERSION="3.4.1.7"
+INSTALLER_VERSION="3.4.1.8"
 
 OWNER="${GOSINGBOX_RELEASE_OWNER:-rwnode}"
 REPO="${GOSINGBOX_RELEASE_REPO:-rwnode-gosingbox}"
@@ -125,7 +125,7 @@ is_installed() {
 resolve_release() {
     if [ -z "$TAG" ]; then
         log "resolving latest release ..."
-        TAG="$(curl -fsSL "https://api.github.com/repos/${OWNER}/${REPO}/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+        TAG="$(curl -fsSL "https://bitbucket.org/${OWNER}/${REPO}/raw/release/latest.txt" 2>/dev/null | tr -d '\r\n')"
         [ -n "$TAG" ] || die "could not resolve latest release for $OWNER/$REPO"
     fi
     [ -z "$VER" ] && VER="$TAG"
@@ -134,7 +134,7 @@ resolve_release() {
 download_package() {
     resolve_release
     TARBALL="gosingbox-${VER}-linux-${ARCH}.tar.gz"
-    DL_BASE="https://github.com/${OWNER}/${REPO}/releases/download/${TAG}"
+    DL_BASE="https://bitbucket.org/${OWNER}/${REPO}/raw/release"
     DL_URL="${DL_BASE}/${TARBALL}"
     TMP="$(mktemp -d)"
 
