@@ -1,9 +1,13 @@
 package singbox
 
 import (
+	"context"
 	"testing"
 
+	box "github.com/sagernet/sing-box"
+	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/service"
 )
 
 func TestUpdateCurrentUsersLockedUpdatesMatchingInbound(t *testing.T) {
@@ -43,5 +47,28 @@ func TestUpdateCurrentUsersLockedIgnoresOtherInbound(t *testing.T) {
 	e.updateCurrentUsersLocked("vless", "other-in", []option.VLESSUser{})
 	if got := inbound["users"]; got != "original" {
 		t.Fatalf("unexpected rollback config mutation: %#v", got)
+	}
+}
+
+type mockV2RayServer struct {
+	adapter.V2RayServer
+	users []string
+}
+
+func (m *mockV2RayServer) UpdateUsers(users []string) {
+	m.users = users
+}
+
+func TestUpdateStatsUsers(t *testing.T) {
+	mock := &mockV2RayServer{}
+	ctx := service.ContextWith[adapter.V2RayServer](context.Background(), mock)
+	e := &Engine{
+		ctx:    ctx,
+		online: true,
+		box:    &box.Box{},
+	}
+	e.UpdateStatsUsers([]string{"user1@example.com", "user2@example.com"})
+	if len(mock.users) != 2 || mock.users[0] != "user1@example.com" || mock.users[1] != "user2@example.com" {
+		t.Fatalf("UpdateStatsUsers did not pass users: %#v", mock.users)
 	}
 }

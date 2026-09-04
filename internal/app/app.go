@@ -259,9 +259,14 @@ func (a *App) applyUserHotSwap() error {
 	if nVless == 0 && nSs == 0 {
 		return fmt.Errorf("no updatable inbound updated")
 	}
+
+	allUserNames := transpiler.StatUserNames(a.state.VlessUsers(), a.state.SsUsers())
+	a.proc.UpdateStatsUsers(allUserNames)
+
 	a.logger.Info("users hot-swapped",
 		"vlessInbounds", nVless, "vlessUsers", len(vless),
-		"ssInbounds", nSs, "ssUsers", len(ss))
+		"ssInbounds", nSs, "ssUsers", len(ss),
+		"statsUsers", len(allUserNames))
 	return nil
 }
 

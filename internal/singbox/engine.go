@@ -243,6 +243,20 @@ func (e *Engine) UpdateSSUsers(tags []string, users []option.ShadowsocksUser) (i
 	return updated, nil
 }
 
+// UpdateStatsUsers updates the v2ray_api stats user tracking whitelist at runtime.
+func (e *Engine) UpdateStatsUsers(users []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.box == nil || !e.online {
+		return
+	}
+	v2rayServer := service.FromContext[adapter.V2RayServer](e.ctx)
+	if v2rayServer == nil {
+		return
+	}
+	v2rayServer.UpdateUsers(users)
+}
+
 // updateCurrentUsersLocked keeps the rollback config aligned with successful
 // in-place user updates. The caller must hold e.mu.
 func (e *Engine) updateCurrentUsersLocked(inboundType, tag string, users any) {

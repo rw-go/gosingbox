@@ -180,6 +180,12 @@ func userNames(users []VlessUser) []string {
 	return out
 }
 
+// StatUserNames returns the unified user email list (VLESS + Shadowsocks 2022)
+// tracked by the v2ray_api stats service.
+func StatUserNames(vless []VlessUser, ss []SsUser) []string {
+	return statUserNames(vless, ss)
+}
+
 // statUserNames returns the unified user email list (VLESS + Shadowsocks 2022)
 // tracked by the v2ray_api stats service.
 func statUserNames(vless []VlessUser, ss []SsUser) []string {
