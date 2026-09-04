@@ -11,7 +11,8 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 
 - **单静态二进制**（sing-box 内嵌，无 Node / glibc / 子进程依赖），Alpine 3.21 + 128MB LXC 可跑。
 - **无感热插拔用户**：VLESS 走 `UpdateUsers()`、SS2022 走 `UpdateUsersByOptions()`，
-  增删不重启监听器、不中断其他连接。
+  增删不重启监听器、不中断其他连接；且热插拔用户实时同步进入统计白名单。
+- **SS2022 双模握手兼容**：多用户 Shadowsocks 2022 入站自动回退单用户（主密钥）直连，对齐 Xray-core 行为（支持节点间直接用 ServerKey 互联中继，无报错且不影响下游用户计费）。
 - 统计走 v2ray_api gRPC；在线用户/单用户 IP/最后活动时间走 clash_api `/connections`（`userId` = 用户 email）。
 - **断连（connection-drop）**：`drop-ips` / `drop-users-connections` 走 clash_api
   `DELETE /connections/:id` 关闭匹配连接，无需 `sockdestroy`/`CAP_NET_ADMIN`；支持

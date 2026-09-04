@@ -86,8 +86,8 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
   内置 `user` 字段补丁，无需 build 时单独打 patch）。
 - **preStart cleanupSockets**：`plugin.sync` 缓存 `preStart.cleanupSockets` 配置，在每次
   sing-box (re)start 前清理遗留 unix socket 文件（glob 展开 + socket 类型校验）。
-- **SS2022 无感热插拔**：`UpdatableShadowsocksInbound.UpdateUsersByOptions`（fork 补丁），
-  用户增删不重启 listener；SS 用户流量并入 v2ray_api `stats.users` 统计。
+- **SS2022 无感热插拔与双模回退**：`UpdatableShadowsocksInbound.UpdateUsersByOptions`（fork 补丁），
+  用户增删不重启 listener；SS 用户流量并入 v2ray_api `stats.users` 统计；多用户入站自动兼容单用户主密钥直连（对齐 Xray-core 行为，支持节点间中继互联）。
 
 ## 六、契约同步记录
 
