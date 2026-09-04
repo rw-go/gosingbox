@@ -162,10 +162,10 @@ func (f *ServerFactory) decompress(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{"error": "unsupported content-encoding: " + enc})
 			return
 		}
+		defer reader.Close()
 		r.Body = reader
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		next.ServeHTTP(w, r)
-		_ = reader.Close()
 	})
 }
 

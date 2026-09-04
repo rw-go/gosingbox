@@ -60,18 +60,29 @@ func geocheckBin() string {
 	return "/usr/local/bin/geocheck"
 }
 
+func resolveGeocheckBind(ip, iface string) (string, error) {
+	if ip != "" {
+		if net.ParseIP(ip) == nil {
+			return "", fmt.Errorf(`Geocheck: %q is not a valid IP address.`, ip)
+		}
+		return ip, nil
+	}
+	if iface == "" {
+		return "", nil
+	}
+	if _, err := net.InterfaceByName(iface); err != nil {
+		return "", fmt.Errorf(`Geocheck: network interface %q is not available.`, iface)
+	}
+	return iface, nil
+}
+
 // geocheckRun invokes the external geocheck binary and returns its parsed
 // JSON report (mirrors the Node.js GeocheckService). ip and iface are optional
 // bind targets.
 func geocheckRun(ip, iface string) (map[string]any, error) {
-	bindTo := ""
-	if ip != "" {
-		if net.ParseIP(ip) == nil {
-			return nil, fmt.Errorf(`Geocheck: %q is not a valid IP address.`, ip)
-		}
-		bindTo = ip
-	} else if iface != "" {
-		bindTo = iface
+	bindTo, err := resolveGeocheckBind(ip, iface)
+	if err != nil {
+		return nil, err
 	}
 
 	geocheckMu.Lock()
@@ -104,7 +115,7 @@ func geocheckRun(ip, iface string) (map[string]any, error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if out.exceeded {
 		return nil, fmt.Errorf("Geocheck output too large")
 	}

@@ -201,18 +201,36 @@ func (m *Manager) UnblockIPs(ips []string) error {
 	if !m.available {
 		return fmt.Errorf("nft unavailable")
 	}
-	var firstErr error
+	return m.removeIPsLocked(ips, setTorrent, setTorrent+"6", setIngress, setIngress6)
+}
+
+func (m *Manager) removeIPsLocked(ips []string, primaryV4, primaryV6, secondaryV4, secondaryV6 string) error {
+	sets := make(map[string][]string)
+	seen := make(map[string]struct{})
 	for _, ip := range ips {
-		t := setFor(ip, setTorrent, setTorrent+"6")
-		if t == "" {
+		if _, ok := seen[ip]; ok {
 			continue
 		}
-		if err := m.run("delete", "element", "inet", tableName, t, "{ "+ip+" }"); err != nil && !isMissingElementError(err) && firstErr == nil {
-			firstErr = err
+		seen[ip] = struct{}{}
+		primary := setFor(ip, primaryV4, primaryV6)
+		if primary == "" {
+			continue
 		}
-		i := setFor(ip, setIngress, setIngress6)
-		if err := m.run("delete", "element", "inet", tableName, i, "{ "+ip+" }"); err != nil && !isMissingElementError(err) && firstErr == nil {
-			firstErr = err
+		secondary := setFor(ip, secondaryV4, secondaryV6)
+		sets[primary] = append(sets[primary], ip)
+		sets[secondary] = append(sets[secondary], ip)
+	}
+
+	var firstErr error
+	for set, elements := range sets {
+		if err := m.run("delete", "element", "inet", tableName, set, batchElements(elements)); err != nil {
+			// A batch delete can fail when any member already expired. Retry each
+			// element to retain the endpoint's idempotent behavior.
+			for _, ip := range elements {
+				if singleErr := m.run("delete", "element", "inet", tableName, set, "{ "+ip+" }"); singleErr != nil && !isMissingElementError(singleErr) && firstErr == nil {
+					firstErr = singleErr
+				}
+			}
 		}
 	}
 	return firstErr
@@ -234,17 +252,7 @@ func (m *Manager) AddIngressIPs(ips []string) error {
 	if !m.available {
 		return fmt.Errorf("nft unavailable")
 	}
-	var firstErr error
-	for _, ip := range ips {
-		set := setFor(ip, setIngress, setIngress6)
-		if set == "" {
-			continue
-		}
-		if err := m.run("add", "element", "inet", tableName, set, "{ "+ip+" }"); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
+	return m.addIPsLocked(ips, setIngress, setIngress6)
 }
 
 // AddEgressIPs adds IPs to the egress-filter set (used by plugin sync).
@@ -254,17 +262,40 @@ func (m *Manager) AddEgressIPs(ips []string) error {
 	if !m.available {
 		return fmt.Errorf("nft unavailable")
 	}
-	var firstErr error
+	return m.addIPsLocked(ips, setEgress, setEgress6)
+}
+
+func (m *Manager) addIPsLocked(ips []string, setV4, setV6 string) error {
+	sets := make(map[string][]string)
+	seen := make(map[string]struct{})
 	for _, ip := range ips {
-		set := setFor(ip, setEgress, setEgress6)
-		if set == "" {
+		if _, ok := seen[ip]; ok {
 			continue
 		}
-		if err := m.run("add", "element", "inet", tableName, set, "{ "+ip+" }"); err != nil && firstErr == nil {
-			firstErr = err
+		seen[ip] = struct{}{}
+		set := setFor(ip, setV4, setV6)
+		if set != "" {
+			sets[set] = append(sets[set], ip)
+		}
+	}
+
+	var firstErr error
+	for set, elements := range sets {
+		if err := m.run("add", "element", "inet", tableName, set, batchElements(elements)); err != nil {
+			// Keep the previous per-element semantics when a batch contains an
+			// already-existing member or another partial failure.
+			for _, ip := range elements {
+				if singleErr := m.run("add", "element", "inet", tableName, set, "{ "+ip+" }"); singleErr != nil && firstErr == nil {
+					firstErr = singleErr
+				}
+			}
 		}
 	}
 	return firstErr
+}
+
+func batchElements(elements []string) string {
+	return "{ " + strings.Join(elements, ", ") + " }"
 }
 
 // AddEgressPorts adds ports to the egress-filter port set.

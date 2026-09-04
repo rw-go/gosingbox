@@ -17,6 +17,10 @@ NODE_SEMVER="${GO_NODE_SEMVER:-3.4.1}" # value reported to the panel (must be ba
 SINGBOX_VERSION="${SINGBOX_VERSION:-1.13.20}"
 GEOCHECK_VERSION="${GEOCHECK_VERSION:-v0.3.0-cn}"
 ARCH="${ARCH:-amd64}"
+GEOCHECK_URL="${GEOCHECK_URL:-https://bitbucket.org/rwnode/rwnode-gosingbox/raw/release/geocheck/${GEOCHECK_VERSION}/geocheck_linux_${ARCH}}"
+# Pin the extracted executable, not an unauthenticated archive checksum. Override
+# this value together with GEOCHECK_URL when intentionally changing geocheck.
+GEOCHECK_BINARY_SHA256="${GEOCHECK_BINARY_SHA256:-f7994c73780d37d56a21f945431f7986c33360f8b50aaa98f0e2e3fa0a144316}"
 PKG_NAME="gosingbox-${VER}-linux-${ARCH}"
 
 echo "==> Go gosingbox ${VER} standalone build (linux/${ARCH})"
@@ -37,13 +41,10 @@ chmod +x "$STAGE/$PKG_NAME/bin/gosingbox"
 
 # --- 2. Fetch geocheck binary (geo detection) ---
 echo "==> [2/2] fetch geocheck ${GEOCHECK_VERSION}"
-GEOCHECK_TGZ="geocheck_linux_${ARCH}.tar.gz"
-GEOCHECK_URL="https://github.com/rwnode/geocheck/releases/download/${GEOCHECK_VERSION}/${GEOCHECK_TGZ}"
-curl -fsSL -o "$OUT_DIR/$GEOCHECK_TGZ" "$GEOCHECK_URL"
-mkdir -p "$OUT_DIR/geocheck-extract"
-tar -xzf "$OUT_DIR/$GEOCHECK_TGZ" -C "$OUT_DIR/geocheck-extract" geocheck
-install -m 0755 "$OUT_DIR/geocheck-extract/geocheck" "$STAGE/$PKG_NAME/bin/geocheck"
-rm -rf "$OUT_DIR/geocheck-extract" "$OUT_DIR/$GEOCHECK_TGZ"
+curl -fsSL -o "$OUT_DIR/geocheck" "$GEOCHECK_URL"
+printf '%s  %s\n' "$GEOCHECK_BINARY_SHA256" "$OUT_DIR/geocheck" | sha256sum -c -
+install -m 0755 "$OUT_DIR/geocheck" "$STAGE/$PKG_NAME/bin/geocheck"
+rm -f "$OUT_DIR/geocheck"
 
 # --- 3. Assemble support files + tarball ---
 echo "==> [3/3] assemble + pack"

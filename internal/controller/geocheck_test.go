@@ -32,3 +32,16 @@ func TestCappedBufferExceedsCancels(t *testing.T) {
 		t.Fatal("expected cancel callback")
 	}
 }
+
+func TestResolveGeocheckBind(t *testing.T) {
+	bind, err := resolveGeocheckBind("192.0.2.1", "does-not-matter")
+	if err != nil || bind != "192.0.2.1" {
+		t.Fatalf("IP bind = %q, %v", bind, err)
+	}
+	if _, err := resolveGeocheckBind("not-an-ip", ""); err == nil {
+		t.Fatal("expected invalid IP error")
+	}
+	if _, err := resolveGeocheckBind("", "__does_not_exist__"); err == nil {
+		t.Fatal("expected missing interface error")
+	}
+}

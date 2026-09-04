@@ -24,3 +24,10 @@ func TestSetForRejectsInvalidAddress(t *testing.T) {
 		t.Fatalf("setFor invalid address = %q, want empty", got)
 	}
 }
+
+func TestBatchElements(t *testing.T) {
+	got := batchElements([]string{"192.0.2.1", "2001:db8::1"})
+	if want := "{ 192.0.2.1, 2001:db8::1 }"; got != want {
+		t.Fatalf("batchElements = %q, want %q", got, want)
+	}
+}
