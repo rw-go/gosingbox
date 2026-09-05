@@ -180,6 +180,17 @@ func (h *Handler) removeUser(w http.ResponseWriter, r *http.Request) {
 	}
 	h.app.RemoveUser(req.HashData.VlessUUID)
 	h.app.RemoveSsUser(req.Username)
+
+	// Immediately terminate live connections for the removed user, aligning with
+	// official node 3.4.1 DropConnectionsEvent on user removal.
+	if req.Username != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := h.app.DropUsers(ctx, []string{req.Username}); err != nil {
+			h.log.Debug("remove-user: drop connections failed", "error", err)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
 }
 
@@ -193,10 +204,25 @@ func (h *Handler) removeUsers(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"success": false, "error": err.Error()}})
 		return
 	}
+	dropUserNames := make([]string, 0, len(req.Users))
 	for _, u := range req.Users {
 		h.app.RemoveUser(u.HashUUID)
 		h.app.RemoveSsUser(u.UserID)
+		if u.UserID != "" {
+			dropUserNames = append(dropUserNames, u.UserID)
+		}
 	}
+
+	// Immediately terminate live connections for all removed users, aligning with
+	// official node 3.4.1 DropConnectionsEvent on user removal.
+	if len(dropUserNames) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := h.app.DropUsers(ctx, dropUserNames); err != nil {
+			h.log.Debug("remove-users: drop connections failed", "error", err)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
 }
 
