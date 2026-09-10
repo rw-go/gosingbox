@@ -471,16 +471,24 @@ func mapShadowsocksInbound(ib map[string]any, ssUsers []SsUser, useDesired bool)
 	}
 
 	if useDesired {
-		var users []any
-		for _, u := range ssUsers {
-			users = append(users, map[string]any{"name": u.Name, "password": u.Password})
+		if len(ssUsers) > 0 {
+			var users []any
+			for _, u := range ssUsers {
+				users = append(users, map[string]any{"name": u.Name, "password": u.Password})
+			}
+			if password == "" {
+				return nil // shared PSK mandatory for sing-box multi-user SS2022
+			}
+			base["password"] = password
+			base["users"] = users
+			return base
 		}
-		if password == "" {
-			return nil // shared PSK mandatory for sing-box multi-user SS2022
+		// If desired SS users is empty, fall through to single-user mode if password is present
+		if password != "" {
+			base["password"] = password
+			return base
 		}
-		base["password"] = password
-		base["users"] = users
-		return base
+		return nil
 	}
 
 	if len(clients) > 0 {
