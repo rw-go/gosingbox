@@ -536,7 +536,22 @@ func buildOutbounds(cfg map[string]any) []map[string]any {
 
 		switch proto {
 		case "freedom":
-			out = append(out, map[string]any{"type": "direct", "tag": tag})
+			d := map[string]any{"type": "direct", "tag": tag}
+			if settings, ok := ob["settings"].(map[string]any); ok {
+				if ds, ok := settings["domainStrategy"].(string); ok {
+					switch ds {
+					case "UseIPv4":
+						d["domain_strategy"] = "ipv4_only"
+					case "UseIPv6":
+						d["domain_strategy"] = "ipv6_only"
+					case "PreferIPv4":
+						d["domain_strategy"] = "prefer_ipv4"
+					case "PreferIPv6":
+						d["domain_strategy"] = "prefer_ipv6"
+					}
+				}
+			}
+			out = append(out, d)
 		case "blackhole":
 			out = append(out, map[string]any{"type": "block", "tag": tag})
 		case "shadowsocks":
