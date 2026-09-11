@@ -88,6 +88,7 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
   sing-box (re)start 前清理遗留 unix socket 文件（glob 展开 + socket 类型校验）。
 - **SS2022 无感热插拔**：`UpdatableShadowsocksInbound.UpdateUsersByOptions`（fork 补丁），
   用户增删不重启 listener；SS 用户流量并入 v2ray_api `stats.users` 统计。
+- **域名嗅探 (Sniffing)**：入站 `sniffing.enabled` 或域名规则自动映射至 sing-box 1.13 `route.rules` 的 `{"action": "sniff"}`，完美支持客户端 IP 连接下的 SNI 域名嗅探与精准分流（对齐 Xray-core）。
 
 ## 六、契约同步记录
 

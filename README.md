@@ -12,6 +12,7 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 - **单静态二进制**（sing-box 内嵌，无 Node / glibc / 子进程依赖），Alpine 3.21 + 128MB LXC 可跑。
 - **无感热插拔用户**：VLESS 走 `UpdateUsers()`、SS2022 走 `UpdateUsersByOptions()`，
   增删不重启监听器、不中断其他连接；且热插拔用户实时同步进入统计白名单。
+- **协议与域名嗅探（Sniffing 对齐）**：当入站开启 `sniffing` 或规则包含域名匹配时，自动注入 sing-box 1.13 `action: sniff` 动作，彻底解决客户端预解析 IP 导致域名分流规则漏匹配的问题（对齐 Xray-core 原生嗅探行为）。
 - 统计走 v2ray_api gRPC；在线用户/单用户 IP/最后活动时间走 clash_api `/connections`（`userId` = 用户 email）。
 - **断连（connection-drop）**：`drop-ips` / `drop-users-connections` 走 clash_api
   `DELETE /connections/:id` 关闭匹配连接，无需 `sockdestroy`/`CAP_NET_ADMIN`；支持

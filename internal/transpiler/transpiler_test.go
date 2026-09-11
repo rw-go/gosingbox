@@ -19,10 +19,14 @@ func TestBuildRoutingPreservesExactAndCIDRMatchers(t *testing.T) {
 		t.Fatal("route is nil")
 	}
 	rules := route["rules"].([]any)
-	if len(rules) != 1 {
+	// Because rules contain domain matching, top rule is auto-injected `action: sniff`.
+	if len(rules) != 2 {
 		t.Fatalf("rules = %#v", rules)
 	}
-	rule := rules[0].(map[string]any)
+	if sniffAction, ok := rules[0].(map[string]any); !ok || sniffAction["action"] != "sniff" {
+		t.Fatalf("expected action: sniff, got %#v", rules[0])
+	}
+	rule := rules[1].(map[string]any)
 	if got := rule["domain"].([]string); len(got) != 1 || got[0] != "example.com" {
 		t.Fatalf("domain = %#v", rule["domain"])
 	}
@@ -68,12 +72,48 @@ func TestBuildRoutingDropsUnknownOutbound(t *testing.T) {
 		t.Fatal("route is nil")
 	}
 	rules := route["rules"].([]any)
-	if len(rules) != 1 {
-		t.Fatalf("expected 1 rule after filtering unknown outbound, got %d", len(rules))
+	// rules contains auto-injected action: sniff + the 1 valid rule
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 rules (sniff + valid outbound rule), got %d", len(rules))
 	}
-	rule := rules[0].(map[string]any)
+	rule := rules[1].(map[string]any)
 	if got := rule["outbound"]; got != "block" {
 		t.Fatalf("outbound = %#v, want block", got)
+	}
+}
+
+func TestBuildRoutingSniffingInjection(t *testing.T) {
+	// Case 1: purely IP-based rule without sniffing inbound -> no sniff rule injected
+	cfgIP := map[string]any{
+		"routing": map[string]any{"rules": []any{
+			map[string]any{"ip": []any{"1.1.1.1"}, "outboundTag": "direct"},
+		}},
+	}
+	routeIP, _ := buildRouting(cfgIP, map[string]bool{"direct": true})
+	rulesIP := routeIP["rules"].([]any)
+	if len(rulesIP) != 1 {
+		t.Fatalf("expected 1 rule without sniffing, got %d", len(rulesIP))
+	}
+
+	// Case 2: purely IP-based rule WITH inbound sniffing enabled -> sniff rule injected
+	cfgInboundSniff := map[string]any{
+		"inbounds": []any{
+			map[string]any{
+				"protocol": "vless",
+				"sniffing": map[string]any{"enabled": true},
+			},
+		},
+		"routing": map[string]any{"rules": []any{
+			map[string]any{"ip": []any{"1.1.1.1"}, "outboundTag": "direct"},
+		}},
+	}
+	routeSniff, _ := buildRouting(cfgInboundSniff, map[string]bool{"direct": true})
+	rulesSniff := routeSniff["rules"].([]any)
+	if len(rulesSniff) != 2 {
+		t.Fatalf("expected 2 rules with inbound sniffing, got %d", len(rulesSniff))
+	}
+	if action, ok := rulesSniff[0].(map[string]any); !ok || action["action"] != "sniff" {
+		t.Fatalf("expected action: sniff, got %#v", rulesSniff[0])
 	}
 }
 

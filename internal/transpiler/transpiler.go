@@ -767,6 +767,13 @@ func buildRouting(cfg map[string]any, validOutbound map[string]bool) (route map[
 		}
 	}
 
+	// If any inbound has sniffing enabled or any routing rule matches domains/protocols,
+	// inject a top-level `action: sniff` rule so sing-box peeks TLS/HTTP/QUIC headers
+	// and populates metadata.Domain/Protocol (aligning with Xray-core's sniffing behavior).
+	if shouldEnableSniffing(cfg, outRules) {
+		outRules = append([]any{map[string]any{"action": "sniff"}}, outRules...)
+	}
+
 	route = map[string]any{
 		"rules": outRules,
 		"final": "direct",
@@ -785,6 +792,37 @@ func hasMatcher(rule map[string]any) bool {
 	}
 	if v, ok := rule["ip_is_private"].(bool); ok && v {
 		return true
+	}
+	return false
+}
+
+// shouldEnableSniffing reports whether a top-level `action: sniff` rule should be
+// injected into sing-box route.rules to mirror Xray-core's inbound sniffing.
+func shouldEnableSniffing(cfg map[string]any, rules []any) bool {
+	// Check if any inbound in the panel config explicitly enabled sniffing.
+	for _, ibAny := range asArr(cfg["inbounds"]) {
+		ib, ok := ibAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if sniffing, ok := ib["sniffing"].(map[string]any); ok {
+			if enabled, _ := sniffing["enabled"].(bool); enabled {
+				return true
+			}
+		}
+	}
+
+	// Check if any routing rule matches domain, protocol or rule_set.
+	for _, rAny := range rules {
+		r, ok := rAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, k := range []string{"domain", "domain_suffix", "domain_keyword", "domain_regex", "rule_set", "protocol"} {
+			if v, ok := r[k].([]string); ok && len(v) > 0 {
+				return true
+			}
+		}
 	}
 	return false
 }
