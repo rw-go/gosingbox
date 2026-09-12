@@ -27,7 +27,7 @@ set -eu
 
 # Installer version. Bump the patch number on EVERY change to this script so
 # users can tell the CDN stopped serving the latest revision. (See AGENTS.md.)
-INSTALLER_VERSION="3.4.1.17"
+INSTALLER_VERSION="3.4.1.18"
 
 OWNER="${GOSINGBOX_RELEASE_OWNER:-rwnode}"
 REPO="${GOSINGBOX_RELEASE_REPO:-rwnode-gosingbox}"
@@ -322,6 +322,9 @@ do_upgrade() {
 
     log "upgrading existing install at $INSTALL_DIR (keeping env config)"
     download_package
+
+    # Stop service before replacing running binaries to avoid Linux "Text file busy" ETXTBSY error
+    stop_service || true
 
     cp -r "$PKG_DIR/." "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/bin/run.sh" "$INSTALL_DIR/bin/gosingbox" "$INSTALL_DIR/bin/geocheck"
