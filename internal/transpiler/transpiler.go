@@ -547,14 +547,14 @@ func buildOutbounds(cfg map[string]any) []map[string]any {
 			d := map[string]any{"type": "direct", "tag": tag}
 			if settings, ok := ob["settings"].(map[string]any); ok {
 				if ds, ok := settings["domainStrategy"].(string); ok {
-					switch ds {
-					case "UseIPv4":
+					switch strings.ToLower(ds) {
+					case "useipv4", "forceipv4":
 						d["domain_strategy"] = "ipv4_only"
-					case "UseIPv6":
+					case "useipv6", "forceipv6":
 						d["domain_strategy"] = "ipv6_only"
-					case "PreferIPv4":
+					case "preferipv4", "useipv4v6", "forceipv4v6":
 						d["domain_strategy"] = "prefer_ipv4"
-					case "PreferIPv6":
+					case "preferipv6", "useipv6v4", "forceipv6v4":
 						d["domain_strategy"] = "prefer_ipv6"
 					}
 				}
