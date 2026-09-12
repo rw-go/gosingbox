@@ -41,18 +41,45 @@ type Payload struct {
 
 // Parse decodes SECRET_KEY into node identity material.
 //
-//  1. Tries base64-decode then JSON-parse (official panel format).
-//  2. Falls back to plain JSON (already-decoded payload).
+//  1. Trims surrounding whitespace and quotes (single, double, or backticks).
+//  2. Strips internal whitespace/newlines so multiline YAML/env values decode cleanly.
+//  3. Tries base64-decode (StdEncoding, RawStdEncoding, URLEncoding, RawURLEncoding)
+//     then JSON-parse (official panel format).
+//  4. Falls back to plain JSON (already-decoded payload).
 func Parse(secretKey string) (*Payload, error) {
 	trimmed := strings.TrimSpace(secretKey)
 
-	// Official: base64(JSON).
-	if raw, err := base64.StdEncoding.DecodeString(trimmed); err == nil {
-		var obj map[string]any
-		if json.Unmarshal(raw, &obj) == nil && len(obj) > 0 {
-			return parseObject(obj)
+	// Strip surrounding quotes if present (e.g. SECRET_KEY="..." or '...')
+	if len(trimmed) >= 2 {
+		if (trimmed[0] == '"' && trimmed[len(trimmed)-1] == '"') ||
+			(trimmed[0] == '\'' && trimmed[len(trimmed)-1] == '\'') ||
+			(trimmed[0] == '`' && trimmed[len(trimmed)-1] == '`') {
+			trimmed = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
 		}
-		// base64 decoded but not JSON; continue to plain-JSON attempt.
+	}
+
+	// Try decoding base64 after stripping whitespace/newlines (matching Node.js Buffer.from(x, 'base64'))
+	cleaned := strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, trimmed)
+
+	encodings := []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	}
+
+	for _, enc := range encodings {
+		if raw, err := enc.DecodeString(cleaned); err == nil {
+			var obj map[string]any
+			if json.Unmarshal(raw, &obj) == nil && len(obj) > 0 {
+				return parseObject(obj)
+			}
+		}
 	}
 
 	// Fallback: plain JSON.
