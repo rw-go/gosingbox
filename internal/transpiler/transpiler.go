@@ -594,6 +594,56 @@ func buildOutbounds(cfg map[string]any) []map[string]any {
 				}
 			}
 			out = append(out, o)
+		case "vless":
+			settings, _ := ob["settings"].(map[string]any)
+			stream, _ := ob["streamSettings"].(map[string]any)
+			reality, _ := stream["realitySettings"].(map[string]any)
+
+			address, _ := settings["address"].(string)
+			uuidStr, _ := settings["id"].(string)
+			if uuidStr == "" {
+				uuidStr, _ = settings["uuid"].(string)
+			}
+			serverPort := 443
+			if p, ok := settings["port"].(float64); ok && p > 0 {
+				serverPort = int(p)
+			}
+			if address == "" || uuidStr == "" {
+				continue
+			}
+
+			flow, _ := settings["flow"].(string)
+			publicKey, _ := reality["publicKey"].(string)
+			serverName, _ := reality["serverName"].(string)
+			shortId, _ := reality["shortId"].(string)
+
+			vlessOut := map[string]any{
+				"type":        "vless",
+				"tag":         tag,
+				"server":      address,
+				"server_port": serverPort,
+				"uuid":        uuidStr,
+			}
+			if flow != "" {
+				vlessOut["flow"] = flow
+			}
+			if stream != nil && stream["security"] == "reality" && publicKey != "" {
+				tlsMap := map[string]any{
+					"enabled":     true,
+					"server_name": serverName,
+					"reality": map[string]any{
+						"enabled":    true,
+						"public_key": publicKey,
+						"short_id":   shortId,
+					},
+					"utls": map[string]any{
+						"enabled":     true,
+						"fingerprint": "chrome",
+					},
+				}
+				vlessOut["tls"] = tlsMap
+			}
+			out = append(out, vlessOut)
 		default:
 			// skip unsupported outbound
 		}
