@@ -28,6 +28,14 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 
 ## 一键安装（OpenRC / systemd）
 
+### 途径 A：从 GitHub 安装（主推荐）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox.sh | GOSINGBOX_RELEASE_SOURCE=github sh
+```
+
+### 途径 B：从 Bitbucket 安装（备选镜像）
+
 ```bash
 wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox.sh | sh
 ```
@@ -48,7 +56,13 @@ Alpine 用 OpenRC，Debian/Ubuntu/Arch 等用 systemd。
 Docker 版使用单进程 Alpine 镜像（内嵌 sing-box，不包含 Node.js、Xray 或 s6），默认镜像：
 `rwnode/gosingbox:latest`。
 
-一键安装：
+一键安装（从 GitHub）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox-docker.sh | sh
+```
+
+或从 Bitbucket：
 
 ```bash
 wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox-docker.sh | sh

@@ -12,13 +12,17 @@
 #   -h | --help        — usage
 #
 # Usage (as root):
-#   wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox.sh | sh
-#   wget -qO- ... | sh -s -- upgrade
-#   wget -qO- ... | sh -s -- uninstall
+#   GitHub:
+#     curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox.sh | GOSINGBOX_RELEASE_SOURCE=github sh
+#   Bitbucket:
+#     wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox.sh | sh
+#     wget -qO- ... | sh -s -- upgrade
+#     wget -qO- ... | sh -s -- uninstall
 #
 # Optional overrides via env:
-#   GOSINGBOX_RELEASE_OWNER  GitHub owner        (default rwnode)
-#   GOSINGBOX_RELEASE_REPO   GitHub repo         (default rwnode-gosingbox)
+#   GOSINGBOX_RELEASE_SOURCE source platform     (github | bitbucket, auto-detected by script origin)
+#   GOSINGBOX_RELEASE_OWNER  repo owner          (default: rw-go for github, rwnode for bitbucket)
+#   GOSINGBOX_RELEASE_REPO   repo name           (default: gosingbox for github, rwnode-gosingbox for bitbucket)
 #   GOSINGBOX_RELEASE_TAG    release tag         (default: latest release)
 #   GOSINGBOX_VER            package version     (default: same as tag)
 #   GOSINGBOX_INSTALL_DIR    install dir         (default /opt/gosingbox)
@@ -27,10 +31,16 @@ set -eu
 
 # Installer version. Bump the patch number on EVERY change to this script so
 # users can tell the CDN stopped serving the latest revision. (See AGENTS.md.)
-INSTALLER_VERSION="3.4.3.1"
+INSTALLER_VERSION="3.4.3.2"
 
-OWNER="${GOSINGBOX_RELEASE_OWNER:-rwnode}"
-REPO="${GOSINGBOX_RELEASE_REPO:-rwnode-gosingbox}"
+SOURCE="${GOSINGBOX_RELEASE_SOURCE:-bitbucket}"
+if [ "$SOURCE" = "github" ]; then
+    OWNER="${GOSINGBOX_RELEASE_OWNER:-rw-go}"
+    REPO="${GOSINGBOX_RELEASE_REPO:-gosingbox}"
+else
+    OWNER="${GOSINGBOX_RELEASE_OWNER:-rwnode}"
+    REPO="${GOSINGBOX_RELEASE_REPO:-rwnode-gosingbox}"
+fi
 # 默认留空：下载时自动解析 latest release；显式设置则固定版本。
 TAG="${GOSINGBOX_RELEASE_TAG:-}"
 VER="${GOSINGBOX_VER:-}"
@@ -122,10 +132,19 @@ is_installed() {
     [ -x "$INSTALL_DIR/bin/gosingbox" ] || [ -f "$INSTALL_DIR/env" ]
 }
 
+get_release_base() {
+    if [ "$SOURCE" = "github" ]; then
+        echo "https://raw.githubusercontent.com/${OWNER}/${REPO}/release"
+    else
+        echo "https://bitbucket.org/${OWNER}/${REPO}/raw/release"
+    fi
+}
+
 resolve_release() {
     if [ -z "$TAG" ]; then
-        log "resolving latest release ..."
-        TAG="$(curl -fsSL "https://bitbucket.org/${OWNER}/${REPO}/raw/release/latest.txt" 2>/dev/null | tr -d '\r\n')"
+        log "resolving latest release from ${SOURCE} (${OWNER}/${REPO}) ..."
+        DL_BASE="$(get_release_base)"
+        TAG="$(curl -fsSL "${DL_BASE}/latest.txt" 2>/dev/null | tr -d '\r\n')"
         [ -n "$TAG" ] || die "could not resolve latest release for $OWNER/$REPO"
     fi
     [ -z "$VER" ] && VER="$TAG"
@@ -134,7 +153,7 @@ resolve_release() {
 download_package() {
     resolve_release
     TARBALL="gosingbox-${VER}-linux-${ARCH}.tar.gz"
-    DL_BASE="https://bitbucket.org/${OWNER}/${REPO}/raw/release"
+    DL_BASE="$(get_release_base)"
     DL_URL="${DL_BASE}/${TARBALL}"
     TMP="$(mktemp -d)"
 
