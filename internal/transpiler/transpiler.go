@@ -948,9 +948,16 @@ func geoRuleSetURL(kind, name string) string {
 func resolveGeoCachePath() string {
 	base := os.Getenv("SINGBOX_GEO_DIR")
 	if base != "" {
+		_ = os.MkdirAll(base, 0755)
 		return joinGeoPath(base, ".cache.db")
 	}
-	return "/var/lib/rnode/singbox/geo-cache.db"
+	defaultDir := "/var/lib/gosingbox/singbox/geo"
+	if err := os.MkdirAll(defaultDir, 0755); err == nil {
+		return joinGeoPath(defaultDir, ".cache.db")
+	}
+	legacyDir := "/var/lib/rnode/singbox"
+	_ = os.MkdirAll(legacyDir, 0755)
+	return joinGeoPath(legacyDir, "geo-cache.db")
 }
 
 func joinGeoPath(dir, name string) string {
