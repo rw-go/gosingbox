@@ -575,12 +575,15 @@ func buildOutbounds(cfg map[string]any) []map[string]any {
 				serverPort = int(p)
 			}
 			o := map[string]any{
-				"type":        "shadowsocks",
-				"tag":         tag,
-				"server":      address,
-				"server_port": serverPort,
-				"method":      method,
-				"password":    password,
+				"type":                    "shadowsocks",
+				"tag":                     tag,
+				"server":                  address,
+				"server_port":             serverPort,
+				"method":                  method,
+				"password":                password,
+				"tcp_keep_alive":          "15s",
+				"tcp_keep_alive_interval": "5s",
+				"connect_timeout":         "5s",
 			}
 			if netStr, ok := settings["network"].(string); ok && netStr != "" {
 				var networks []string
@@ -618,11 +621,14 @@ func buildOutbounds(cfg map[string]any) []map[string]any {
 			shortId, _ := reality["shortId"].(string)
 
 			vlessOut := map[string]any{
-				"type":        "vless",
-				"tag":         tag,
-				"server":      address,
-				"server_port": serverPort,
-				"uuid":        uuidStr,
+				"type":                    "vless",
+				"tag":                     tag,
+				"server":                  address,
+				"server_port":             serverPort,
+				"uuid":                    uuidStr,
+				"tcp_keep_alive":          "15s",
+				"tcp_keep_alive_interval": "5s",
+				"connect_timeout":         "5s",
 			}
 			if flow != "" {
 				vlessOut["flow"] = flow
