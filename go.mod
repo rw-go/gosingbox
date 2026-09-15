@@ -10,7 +10,7 @@ require (
 	google.golang.org/grpc v1.83.2
 )
 
-replace github.com/sagernet/sing-box => /root/rw-node/node/.lab/src/sing-box-1.13.20
+replace github.com/sagernet/sing-box => bitbucket.org/rwnode/sing-box-fork v1.13.20-updatable.2
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
