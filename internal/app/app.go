@@ -8,7 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -27,7 +29,10 @@ import (
 // NodeVersion is the reported node version (set via ldflags at build time).
 // Must be a bare semver — the panel parses this to decide node compatibility,
 // and a suffix like "-go" is treated as an outdated/unknown version.
-var NodeVersion = "3.4.1"
+var NodeVersion = "3.4.3"
+
+// webhookTimeout mirrors the official send-webhook util's WEBHOOK_TIMEOUT_MS.
+const webhookTimeout = 5 * time.Second
 
 // defaultIgnoredIPs mirrors the official node's DEFAULT_IGNORED_IPS: source
 // addresses that are never torn down by drop-ips / drop-users-connections
@@ -63,6 +68,10 @@ type App struct {
 	// preStart cleanupSockets config from the last plugin sync.
 	preMu      sync.Mutex
 	preCleanup *CleanupSocketsSpec
+	// postStart webhook config from the last plugin sync (fires
+	// service.core_started after every successful core start).
+	postMu      sync.Mutex
+	postWebhook *PostStartWebhookSpec
 	// connection-drop whitelist from the last plugin sync (drop-ips / drop-users
 	// skip whitelisted and default-ignored source IPs, mirroring the official
 	// connection-drop state).
@@ -545,6 +554,13 @@ func (a *App) setPreCleanup(spec *CleanupSocketsSpec) {
 	a.preMu.Unlock()
 }
 
+// setPostStartWebhook caches the postStart webhook config from plugin sync.
+func (a *App) setPostStartWebhook(spec *PostStartWebhookSpec) {
+	a.postMu.Lock()
+	a.postWebhook = spec
+	a.postMu.Unlock()
+}
+
 // setDropWhitelist replaces the connection-drop whitelist (nil/empty clears it).
 func (a *App) setDropWhitelist(ips []string) {
 	m := make(map[string]struct{}, len(ips))
@@ -583,6 +599,51 @@ func (a *App) runPreCleanup() {
 	}
 }
 
+// RunPostStart fires the postStart core_started webhook after the data plane is
+// up, mirroring the official node's RunPostStartCommand. Errors are logged and
+// never fail the start.
+func (a *App) RunPostStart(metadata json.RawMessage) {
+	a.postMu.Lock()
+	webhook := a.postWebhook
+	a.postMu.Unlock()
+	if webhook == nil || !webhook.Enabled || webhook.URL == "" {
+		return
+	}
+	if metadata == nil {
+		metadata = json.RawMessage("{}")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"scope":     "service",
+		"event":     "service.core_started",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"metadata":  metadata,
+	})
+	if err != nil {
+		a.logger.Warn("post-start webhook encode failed", "error", err)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), webhookTimeout)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhook.URL, bytes.NewReader(payload))
+		if err != nil {
+			a.logger.Warn("post-start webhook request build failed", "error", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			a.logger.Warn("post-start webhook failed", "error", err)
+			return
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if resp.StatusCode >= 400 {
+			a.logger.Warn("post-start webhook failed", "error", fmt.Sprintf("HTTP %d", resp.StatusCode))
+		}
+	}()
+}
+
 // SetAsnIndex wires in an optional ASN index used to resolve "asList" shared
 // lists. May be nil (ASN resolution disabled).
 func (a *App) SetAsnIndex(idx *asn.Index) {
@@ -597,12 +658,25 @@ type PluginSpec struct {
 	ConnectionDrop *ConnectionDropSpec `json:"connectionDrop"`
 	TorrentBlocker json.RawMessage     `json:"torrentBlocker"`
 	PreStart       *PreStartSpec       `json:"preStart"`
+	PostStart      *PostStartSpec      `json:"postStart"`
 }
 
 // PreStartSpec mirrors the preStart plugin section.
 type PreStartSpec struct {
 	Enabled        bool                `json:"enabled"`
 	CleanupSockets *CleanupSocketsSpec `json:"cleanupSockets"`
+}
+
+// PostStartSpec mirrors the postStart plugin section.
+type PostStartSpec struct {
+	Enabled bool                  `json:"enabled"`
+	Webhook *PostStartWebhookSpec `json:"webhook"`
+}
+
+// PostStartWebhookSpec mirrors the postStart webhook config.
+type PostStartWebhookSpec struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url"`
 }
 
 // CleanupSocketsSpec mirrors the preStart cleanupSockets config.
@@ -649,6 +723,12 @@ func (a *App) SyncPlugins(p PluginSpec) bool {
 		cleanup = p.PreStart.CleanupSockets
 	}
 	a.setPreCleanup(cleanup)
+
+	var postWebhook *PostStartWebhookSpec
+	if p.PostStart != nil && p.PostStart.Enabled {
+		postWebhook = p.PostStart.Webhook
+	}
+	a.setPostStartWebhook(postWebhook)
 
 	sharedMap := a.resolveSharedLists(p.SharedLists)
 

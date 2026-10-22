@@ -1,7 +1,7 @@
 # 未实现 / 降级功能
 
 本文档记录 `gosingbox`（Go 版节点，sing-box 数据面）相对官方 remnawave/node 的功能
-差距与暂不实现项。对照基准为**官方 3.4.1** 的 Panel-facing contract。
+差距与暂不实现项。对照基准为**官方 3.4.3** 的 Panel-facing contract。
 
 分三类：**未实现**、**类似实现**、**sing-box 下无需实现**。
 
@@ -49,7 +49,7 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
 | ASN LMDB（官方 asn-lmdb 模块） | JSON index 已够用（可选加载），LMDB 需 CGO |
 | Xray stats 高级字段（如 `sumAvg` 等） | v2ray_api 已覆盖主要计数器；除非 Panel 因缺字段报错再补 |
 
-## 五、已实现（对照 3.4.1）
+## 五、已实现（对照 3.4.3）
 
 ### 端点
 
@@ -66,7 +66,7 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
 | stats | get-geocheck | ✅ 内置 geocheck 二进制 |
 | handler | add-user / add-users / remove-user / remove-users | ✅ 无感热插拔（VLESS + SS2022，debounce + `UpdateUsers`） |
 | handler | drop-users-connections / drop-ips | ✅ clash_api `DELETE /connections/:id`（按 email / sourceIP 匹配；跳过白名单 + 默认忽略 IP） |
-| plugin | sync（sharedLists + ingress/egress filter + connection-drop + preStart） | ✅（`ipList`/`asList` 解析，`ext:` 展开，cleanupSockets，connection-drop 白名单） |
+| plugin | sync（sharedLists + ingress/egress filter + connection-drop + preStart + postStart） | ✅（`ipList`/`asList` 解析，`ext:` 展开，cleanupSockets，connection-drop 白名单，postStart webhook） |
 | plugin | nftables block-ips / unblock-ips / recreate-tables | ✅ `nft` CLI（含 `NFTABLES_ACCEPT_REPLY_TRAFFIC`） |
 | internal | get-config | ✅ |
 
@@ -86,9 +86,12 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
   内置 `user` 字段补丁，无需 build 时单独打 patch）。
 - **preStart cleanupSockets**：`plugin.sync` 缓存 `preStart.cleanupSockets` 配置，在每次
   sing-box (re)start 前清理遗留 unix socket 文件（glob 展开 + socket 类型校验）。
+- **postStart webhook**（官方 3.4.2）：`plugin.sync` 缓存 `postStart.webhook` 配置，每次
+  `xray/start` 成功后异步发送 `service.core_started` webhook（5 秒超时，失败仅告警），
+  payload 与官方 `PostStartService.sendCoreStartedWebhook` 一致（含 `internals.metadata` 透传）。
 - **SS2022 无感热插拔**：`UpdatableShadowsocksInbound.UpdateUsersByOptions`（fork 补丁），
   用户增删不重启 listener；SS 用户流量并入 v2ray_api `stats.users` 统计。
-- **域名嗅探 (Sniffing)**：入站 `sniffing.enabled` 或域名规则自动映射至 sing-box 1.13 `route.rules` 的 `{"action": "sniff"}`，完美支持客户端 IP 连接下的 SNI 域名嗅探与精准分流（对齐 Xray-core）。
+- **域名嗅探 (Sniffing)**：入站 `sniffing.enabled` 或域名规则自动映射至 sing-box 1.14 `route.rules` 的 `{"action": "sniff"}`，支持客户端 IP 连接下的 SNI 域名嗅探与分流。
 
 ## 六、契约同步记录
 
@@ -96,3 +99,13 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
   （官方 3.4.0 从 handler contract 删除）。
 - 已对齐官方 **3.4.1**：`add-user` 在 `prevVlessUuid` 存在（UUID 轮换）时，移除旧用户并
   通过 clash_api 断开其现网连接（官方 3.4.1 addUser 的 `DropConnectionsEvent` 逻辑）。
+- 已对齐官方 **3.4.2**：新增 postStart 插件——`plugin.sync` 接受 `postStart` 段并在每次
+  core 成功启动后发送 `service.core_started` webhook（`internals.metadata` 随 `/node/xray/start`
+  请求透传）；contract 移除 `CipherType.NONE` 枚举值。
+- 已对齐官方 **3.4.3**：官方为纯维护版本（`src/` 与 `libs/` contract 零变更，仅 version
+  bump + Docker 基础镜像 node:24.20→24.22），无代码同步项；`nodeVersion` 基线切换为 3.4.3。
+- **已知差异·空插件推送清理**：官方收到 `plugin == null` 时 `resetPlugins()` 重置全部插件
+  状态（含 postStart/preStart/connectionDrop 白名单）并停 Xray；gosingbox 仅重建 nft 表，
+  已缓存的 postStart webhook / preStart cleanupSockets / drop 白名单不清空（下次
+  `plugin.sync` 才覆盖）。面板删除插件配置后 webhook 会多发一轮，影响极低，暂按近似实现
+  保留。

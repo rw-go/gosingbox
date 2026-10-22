@@ -1,5 +1,5 @@
 // Package controller implements the panel-facing HTTP endpoint handlers,
-// mirroring the Node.js v3.4.1 controllers where applicable.
+// mirroring the Node.js v3.4.3 controllers where applicable.
 package controller
 
 import (
@@ -31,7 +31,8 @@ func (x *Xray) Router(mux *http.ServeMux) {
 // StartXrayRequest is the body of POST /node/xray/start (panel pushes config).
 type StartXrayRequest struct {
 	Internals struct {
-		ForceRestart bool `json:"forceRestart"`
+		Metadata     json.RawMessage `json:"metadata"`
+		ForceRestart bool            `json:"forceRestart"`
 	} `json:"internals"`
 	XrayConfig json.RawMessage `json:"xrayConfig"`
 }
@@ -66,6 +67,7 @@ func (x *Xray) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	x.log.Info("start: sing-box started successfully")
+	x.app.RunPostStart(req.Internals.Metadata)
 	x.writeStartResponse(w, true, "")
 }
 

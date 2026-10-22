@@ -3,17 +3,23 @@
 FROM golang:1.26.5-alpine AS build
 
 ARG TARGETARCH
-ARG SINGBOX_VERSION=1.13.20
+ARG SINGBOX_VERSION=1.14.3
 ARG GEOCHECK_VERSION=0.3.0-cn
 
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+# cache mount：与 aialloy 项目共用同一份 Go 模块缓存（同一 target 即共享），
+# 两边都依赖 xray/sing 生态，重复的模块只下载一次。
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    go mod download
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+# 编译缓存同样持久化：改代码后增量编译，不再全量重编
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build -trimpath -tags "with_clash_api,with_v2ray_api,with_utls,with_acme,with_quic" \
-    -ldflags "-s -w -X github.com/rwnode/rwnode-gosingbox/internal/app.NodeVersion=3.4.1 -X github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}" \
+    -ldflags "-s -w -X github.com/rwnode/rwnode-gosingbox/internal/app.NodeVersion=3.4.3 -X github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}" \
     -o /out/gosingbox ./cmd/rw-node-singbox
 
 FROM alpine:3.21 AS geocheck
@@ -21,7 +27,8 @@ FROM alpine:3.21 AS geocheck
 ARG TARGETARCH
 ARG GEOCHECK_VERSION=0.3.0-cn
 
-RUN apk add --no-cache ca-certificates curl \
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
+    apk add --update-cache ca-certificates curl \
     && case "${TARGETARCH}" in \
          amd64|arm64) ;; \
          *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
@@ -45,7 +52,8 @@ LABEL org.opencontainers.image.title="gosingbox" \
       org.opencontainers.image.vendor="rwnode" \
       org.opencontainers.image.licenses="AGPL-3.0"
 
-RUN apk add --no-cache ca-certificates nftables
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
+    apk add --update-cache ca-certificates nftables
 
 COPY --from=build /out/gosingbox /usr/local/bin/gosingbox
 COPY --from=geocheck /usr/local/bin/geocheck /usr/local/bin/geocheck
