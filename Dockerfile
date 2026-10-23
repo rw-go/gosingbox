@@ -34,14 +34,13 @@ RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
          *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
        esac \
     && cd /tmp \
-    && ARCHIVE="geocheck_linux_${TARGETARCH}.tar.gz" \
-    && BASE="https://github.com/rwnode/geocheck/releases/download/v${GEOCHECK_VERSION}" \
-    && curl -fsSL "${BASE}/${ARCHIVE}" -o "${ARCHIVE}" \
+    && BIN="geocheck_linux_${TARGETARCH}" \
+    && BASE="https://bitbucket.org/rwnode/rwnode-gosingbox/raw/release/geocheck/v${GEOCHECK_VERSION}" \
     && curl -fsSL "${BASE}/checksums.txt" -o checksums.txt \
-    && grep "  ${ARCHIVE}$" checksums.txt | sha256sum -c - \
-    && tar -xzf "${ARCHIVE}" geocheck \
-    && install -m 0755 /tmp/geocheck /usr/local/bin/geocheck \
-    && rm -f "/tmp/${ARCHIVE}" /tmp/checksums.txt /tmp/geocheck
+    && curl -fsSL "${BASE}/${BIN}" -o "${BIN}" \
+    && grep "  ${BIN}$" checksums.txt | sha256sum -c - \
+    && install -m 0755 "/tmp/${BIN}" /usr/local/bin/geocheck \
+    && rm -f "/tmp/${BIN}" /tmp/checksums.txt
 
 FROM alpine:3.21
 
