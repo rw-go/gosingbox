@@ -1,0 +1,23 @@
+{
+  "version": "3.4.1.19",
+  "sourceRevision": "ff7a486e2c6ded22df983577b129d2b38eca8c72",
+  "nodeVersion": "3.4.1",
+  "singboxVersion": "1.14.3",
+  "platform": "linux/amd64",
+  "imageId": "sha256:02d1791dff97f8d4da25396be28f2f805cf373d3d9a428d6ab49e225a00ec6f0",
+  "imageSize": 23851563,
+  "package": "gosingbox-3.4.1.19-linux-amd64.tar.gz",
+  "packageSha256": "a95225c6012a50397451871f2fa08c250302945d05179ae3eaccb62d735bbe6a",
+  "binaries": {
+    "gosingbox": "629af7faef085f47d064fd01920a84fce56802f9882822000b544486ab5025cb",
+    "geocheck": "f7994c73780d37d56a21f945431f7986c33360f8b50aaa98f0e2e3fa0a144316",
+    "gosingbox-entrypoint": "fa8a0ebd1fd17221d7d9175e74803a1e3f1cb2bbc3dff8d75436c54a4efa9b87"
+  },
+  "dockerRuntimeMatchesStandalonePackage": true,
+  "missingSecretRejected": true,
+  "entrypointAndBinarySmokePassed": true,
+  "dockerDigest": "sha256:02d1791dff97f8d4da25396be28f2f805cf373d3d9a428d6ab49e225a00ec6f0",
+  "dockerPlatformDigest": "sha256:d58cc8029a4e902eb8498212d7e220afa5ea80d49c626b879a1c6026f4250f87",
+  "dockerConfigDigest": "sha256:544a9f56a9c00780b6882434c08b95dd74e277b89886130de128f1cfa82c32b0",
+  "runtimeValidation": "10 speedtest checks against the release Docker node passed"
+}
