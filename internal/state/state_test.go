@@ -1,35 +1,95 @@
 package state
 
 import (
+	"github.com/rwnode/rwnode-gosingbox/internal/contract"
+	"reflect"
 	"testing"
-
-	"github.com/rwnode/rwnode-gosingbox/internal/transpiler"
 )
 
-func TestCommitConfigCopiesAllInputs(t *testing.T) {
-	s := New()
+func fixture() Snapshot {
+	return Snapshot{
+		"a": {Protocol: "vless", Users: map[string]User{"1": {ID: "1", Credential: "old", HashUUID: "old"}, "2": {ID: "2", Credential: "other"}}},
+		"b": {Protocol: "vless", Users: map[string]User{"1": {ID: "1", Credential: "old", HashUUID: "old"}}},
+		"c": {Protocol: "anytls", Users: map[string]User{"1": {ID: "1", Credential: "old", HashUUID: "old"}}},
+	}
+}
+func TestReplacementIsolationRotationAndRetry(t *testing.T) {
+	original := fixture()
+	updates := []Update{{ID: "1", PreviousUUID: "old", HashUUID: "new", Memberships: []Membership{
+		{Tag: "b", Protocol: "vless", User: User{ID: "1", Credential: "new"}},
+		{Tag: "c", Protocol: "anytls", User: User{ID: "1", Credential: "new"}},
+	}}}
+	next, err := original.Replace(updates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := next["a"].Users["1"]; ok {
+		t.Fatal("old membership retained")
+	}
+	if len(next["a"].Users) != 1 || next["a"].Users["2"].Credential != "other" {
+		t.Fatal("unaffected user changed")
+	}
+	if next["c"].Users["1"].Credential != "new" || next["b"].Users["1"].Credential != "new" {
+		t.Fatal("incomplete rotation")
+	}
+	retry, err := next.Replace(updates)
+	if err != nil || !reflect.DeepEqual(retry, next) {
+		t.Fatalf("retry: %v", err)
+	}
+	if original["a"].Users["1"].Credential != "old" {
+		t.Fatal("mutated source snapshot")
+	}
+	removed, err := next.Replace([]Update{{ID: "1", HashUUID: "new"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed["b"].Users) != 0 || len(removed["c"].Users) != 0 || len(removed["a"].Users) != 1 {
+		t.Fatal("removal scope incorrect")
+	}
+}
+func TestWholeBatchPrevalidation(t *testing.T) {
+	original := fixture()
+	for _, bad := range []Update{
+		{ID: "2", Memberships: []Membership{{Tag: "missing", Protocol: "vless", User: User{ID: "2", Credential: "x"}}}},
+		{ID: "2", Memberships: []Membership{{Tag: "a", Protocol: "anytls", User: User{ID: "2", Credential: "x"}}}},
+		{ID: "2", Memberships: []Membership{{Tag: "b", Protocol: "vless", User: User{ID: "different", Credential: "x"}}}},
+	} {
+		if _, err := original.Replace([]Update{{ID: "1"}, bad}); err == nil {
+			t.Fatal("bad batch accepted")
+		}
+		if !reflect.DeepEqual(original, fixture()) {
+			t.Fatal("partial batch mutation")
+		}
+	}
+}
+func TestCredentialAliasAndAmbiguity(t *testing.T) {
+	original := fixture()
+	next, err := original.Replace([]Update{{HashUUID: "old"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next["b"].Users) != 0 {
+		t.Fatal("alias failed")
+	}
+	if _, err = original.Replace([]Update{{ID: "2", HashUUID: "old"}}); err == nil {
+		t.Fatal("cross-user alias accepted")
+	}
+}
+func TestCommittedSnapshotsAreCopiedAndGenerationChecked(t *testing.T) {
+	st := New()
 	raw := []byte(`{"inbounds":[]}`)
-	vless := []transpiler.VlessUser{{Name: "vless@example.com", UUID: "uuid-1", Flow: "xtls-rprx-vision"}}
-	ss := []transpiler.SsUser{{Name: "ss@example.com", Password: "secret"}}
-	tags := []string{"in-1"}
-
-	s.CommitConfig(raw, vless, ss, tags)
-
+	users := fixture()
+	st.Commit(raw, users, contract.XrayConfig)
 	raw[0] = 'x'
-	vless[0].Name = "changed"
-	ss[0].Name = "changed"
-	tags[0] = "changed"
-
-	if got := string(s.RawConfig()); got != `{"inbounds":[]}` {
-		t.Fatalf("raw config = %q", got)
+	delete(users["a"].Users, "1")
+	snapshot, generation := st.Snapshot()
+	delete(snapshot["b"].Users, "1")
+	fresh, _ := st.Snapshot()
+	if len(fresh["b"].Users) != 1 || len(fresh["a"].Users) != 2 || st.RawConfig()[0] != '{' {
+		t.Fatal("aliased state")
 	}
-	if got := s.VlessUsers(); len(got) != 1 || got[0].Name != "vless@example.com" {
-		t.Fatalf("vless users = %#v", got)
-	}
-	if got := s.SsUsers(); len(got) != 1 || got[0].Name != "ss@example.com" {
-		t.Fatalf("ss users = %#v", got)
-	}
-	if got := s.InboundTags(); len(got) != 1 || got[0] != "in-1" {
-		t.Fatalf("inbound tags = %#v", got)
+	st.Commit([]byte(`{}`), fixture(), contract.SingBoxConfig)
+	if err := st.CommitUsers(snapshot, generation); err == nil {
+		t.Fatal("stale generation applied")
 	}
 }

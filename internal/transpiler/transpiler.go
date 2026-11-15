@@ -79,7 +79,11 @@ func Transpile(raw []byte, statsListen, clashListen, logLevel string, desiredUse
 		proto, _ := ib["protocol"].(string)
 		switch {
 		case proto == "vless" && stream != nil && stream["security"] == "reality":
-			mapped := mapVlessInbound(ib, vlessUsers)
+			localUsers := vlessUsers
+			if desiredUsers == nil {
+				localUsers = buildVlessUsers(map[string]any{"inbounds": []any{ib}}, nil)
+			}
+			mapped := mapVlessInbound(ib, localUsers)
 			if mapped != nil {
 				singBoxInbounds = append(singBoxInbounds, mapped)
 				if tag, ok := mapped["tag"].(string); ok {
@@ -93,7 +97,11 @@ func Transpile(raw []byte, statsListen, clashListen, logLevel string, desiredUse
 				}
 			}
 		case proto == "shadowsocks":
-			mapped := mapShadowsocksInbound(ib, ssUsers, ssUseDesired)
+			localUsers := ssUsers
+			if !ssUseDesired {
+				localUsers = buildSsUsers(map[string]any{"inbounds": []any{ib}}, nil)
+			}
+			mapped := mapShadowsocksInbound(ib, localUsers, ssUseDesired)
 			if mapped != nil {
 				singBoxInbounds = append(singBoxInbounds, mapped)
 				if tag, ok := mapped["tag"].(string); ok {
@@ -483,9 +491,11 @@ func mapShadowsocksInbound(ib map[string]any, ssUsers []SsUser, useDesired bool)
 			base["users"] = users
 			return base
 		}
-		// If desired SS users is empty, fall through to single-user mode if password is present
+		// Keep an empty managed server closed to all users, never a single PSK.
 		if password != "" {
 			base["password"] = password
+			base["users"] = []any{}
+			base["managed"] = true
 			return base
 		}
 		return nil
@@ -518,6 +528,15 @@ func mapShadowsocksInbound(ib map[string]any, ssUsers []SsUser, useDesired bool)
 		}
 	}
 
+	if _, managed := settings["clients"]; managed || useDesired {
+		if password == "" {
+			return nil
+		}
+		base["password"] = password
+		base["users"] = []any{}
+		base["managed"] = true
+		return base
+	}
 	if password == "" {
 		return nil
 	}

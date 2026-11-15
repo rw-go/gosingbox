@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sagernet/sing-box/option"
-
 	"github.com/rwnode/rwnode-gosingbox/internal/asn"
+	"github.com/rwnode/rwnode-gosingbox/internal/contract"
+	"github.com/rwnode/rwnode-gosingbox/internal/nativeconfig"
 	"github.com/rwnode/rwnode-gosingbox/internal/nftables"
 	"github.com/rwnode/rwnode-gosingbox/internal/prestart"
 	"github.com/rwnode/rwnode-gosingbox/internal/singbox"
@@ -29,7 +29,7 @@ import (
 // NodeVersion is the reported node version (set via ldflags at build time).
 // Must be a bare semver — the panel parses this to decide node compatibility,
 // and a suffix like "-go" is treated as an outdated/unknown version.
-var NodeVersion = "3.4.3"
+var NodeVersion = "3.4.1"
 
 // webhookTimeout mirrors the official send-webhook util's WEBHOOK_TIMEOUT_MS.
 const webhookTimeout = 5 * time.Second
@@ -49,16 +49,15 @@ var defaultIgnoredIPs = map[string]struct{}{
 
 // App is the top-level orchestrator.
 type App struct {
-	logger   *slog.Logger
-	state    *state.State
-	proc     *singbox.Engine
-	cfg      *singbox.Options
-	sys      *systemstats.Reader
-	nft      *nftables.Manager
-	asnIdx   *asn.Index
-	configMu sync.Mutex
-
-	debounceMs time.Duration
+	logger             *slog.Logger
+	state              *state.State
+	proc               *singbox.Engine
+	cfg                *singbox.Options
+	sys                *systemstats.Reader
+	nft                *nftables.Manager
+	asnIdx             *asn.Index
+	configMu           sync.Mutex
+	pendingRevocations map[string]struct{}
 
 	// desired working config derived from the last panel push
 	statsAddr string
@@ -77,14 +76,11 @@ type App struct {
 	// connection-drop state).
 	dropMu        sync.Mutex
 	dropWhitelist map[string]struct{}
-	userMu        sync.Mutex
-	userTimer     *time.Timer
-	userEpoch     uint64
-	stopped       bool
 }
 
-// New creates an App around the given embedded sing-box engine.
-func New(logger *slog.Logger, proc *singbox.Engine, st *state.State, debounceMs int, acceptReplyTraffic bool) *App {
+// New creates an App around the embedded engine. The legacy debounce argument
+// remains accepted for deployment compatibility; user requests apply synchronously.
+func New(logger *slog.Logger, proc *singbox.Engine, st *state.State, _ int, acceptReplyTraffic bool) *App {
 	nft := nftables.New(acceptReplyTraffic)
 	if nft.Available() {
 		if err := nft.CreateTable(); err != nil {
@@ -96,16 +92,16 @@ func New(logger *slog.Logger, proc *singbox.Engine, st *state.State, debounceMs 
 		logger.Warn("nftables unavailable (no nft binary or no CAP_NET_ADMIN); plugin firewall endpoints degraded")
 	}
 	return &App{
-		logger:        logger,
-		proc:          proc,
-		state:         st,
-		sys:           systemstats.NewReader(),
-		nft:           nft,
-		debounceMs:    time.Duration(debounceMs) * time.Millisecond,
-		statsAddr:     proc.StatsAddr(),
-		clashAddr:     proc.ClashAddr(),
-		logLevel:      proc.LogLevel(),
-		dropWhitelist: map[string]struct{}{},
+		logger:             logger,
+		pendingRevocations: map[string]struct{}{},
+		proc:               proc,
+		state:              st,
+		sys:                systemstats.NewReader(),
+		nft:                nft,
+		statsAddr:          proc.StatsAddr(),
+		clashAddr:          proc.ClashAddr(),
+		logLevel:           proc.LogLevel(),
+		dropWhitelist:      map[string]struct{}{},
 	}
 }
 
@@ -120,217 +116,129 @@ func (a *App) Start(raw []byte) error {
 // The config is parsed, transpiled and applied before any state is committed:
 // on failure, the previous config/users/inbound-tags all remain intact.
 func (a *App) StartWithForce(raw []byte, force bool) error {
+	return a.StartConfig(raw, contract.XrayConfig, force)
+}
+
+// StartConfig dispatches explicit input formats; native input never enters the transpiler.
+func (a *App) StartConfig(raw []byte, format contract.ConfigFormat, force bool) error {
 	a.configMu.Lock()
 	defer a.configMu.Unlock()
 
-	a.userMu.Lock()
-	a.stopped = false
-	a.userEpoch++
-	if a.userTimer != nil {
-		a.userTimer.Stop()
-		a.userTimer = nil
-	}
-	a.userMu.Unlock()
-	if !force && a.state.HasConfig() && bytes.Equal(a.state.RawConfig(), raw) && a.proc.IsRunning() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		healthy := a.proc.Ping(ctx)
-		cancel()
-		if healthy {
-			return nil
+	format = format.WithDefault()
+	var prepared map[string]any
+	switch format {
+	case contract.XrayConfig:
+		res, err := transpiler.Transpile(raw, a.statsAddr, a.clashAddr, a.logLevel, nil, nil)
+		if err != nil {
+			return fmt.Errorf("transpile: %w", err)
 		}
+		prepared = res.Config
+	case contract.SingBoxConfig:
+		if !contract.NativeConfigAvailable {
+			return fmt.Errorf("native config requires with_clash_api and with_v2ray_api build tags")
+		}
+		res, err := nativeconfig.Prepare(raw, nativeconfig.Management{StatsAddress: a.statsAddr, ClashAddress: a.clashAddr, ClashSecret: a.proc.ClashSecret()})
+		if err != nil {
+			return fmt.Errorf("prepare native config: %w", err)
+		}
+		prepared = res.Config
+		if err = a.proc.ValidateConfig(prepared); err != nil {
+			return fmt.Errorf("validate native config: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported config format: %q", format)
 	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return fmt.Errorf("parse panel config: %w", err)
-	}
-	vless := transpiler.UsersFromConfig(cfg)
-	ss := transpiler.SsUsersFromConfig(cfg)
-
-	res, err := transpiler.Transpile(raw, a.statsAddr, a.clashAddr, a.logLevel, vless, ss)
+	users, err := state.FromConfig(prepared)
 	if err != nil {
-		return fmt.Errorf("transpile: %w", err)
-	}
-
-	a.runPreCleanup()
-
-	if err := a.proc.ApplyConfig(res.Config); err != nil {
 		return err
 	}
-
-	// Only commit state after the new config is fully applied.
-	a.state.CommitConfig(raw, vless, ss, inboundTagsOf(res.Config))
-	return nil
+	if !force && a.state.Format() == format && a.proc.SameBase(prepared) {
+		current, _ := a.state.Snapshot()
+		if err = a.proc.ApplyUsers(users); err != nil {
+			return err
+		}
+		a.queueRevocations(current, users)
+	} else {
+		a.runPreCleanup()
+		if err = a.proc.ApplyConfig(prepared); err != nil {
+			return err
+		}
+		clear(a.pendingRevocations)
+	}
+	a.state.Commit(raw, users, format)
+	return a.flushRevocations()
 }
 
-// applyToSingbox (re)builds and applies the already-committed state to sing-box.
-// It is used by the user hot-swap fallback path.
-func (a *App) applyToSingbox() error {
+// UpdateUsers serializes full authorization replacements with config changes.
+// Success means applied; no delayed timer can replay an older generation.
+func (a *App) UpdateUsers(updates []state.Update) error {
 	a.configMu.Lock()
 	defer a.configMu.Unlock()
-	return a.applyToSingboxLocked()
-}
-
-func (a *App) applyToSingboxLocked() error {
-	raw := a.state.RawConfig()
-	if raw == nil {
+	if !a.state.HasConfig() {
 		return fmt.Errorf("no panel config available")
 	}
-
-	res, err := transpiler.Transpile(raw, a.statsAddr, a.clashAddr, a.logLevel, a.state.VlessUsers(), a.state.SsUsers())
-	if err != nil {
-		return fmt.Errorf("transpile: %w", err)
-	}
-
-	a.runPreCleanup()
-
-	if err := a.proc.ApplyConfig(res.Config); err != nil {
-		return err
-	}
-
-	// Record inbound tags for stats/lookup only after a successful apply.
-	a.state.SetInboundTags(inboundTagsOf(res.Config))
-	return nil
-}
-
-func inboundTagsOf(cfg map[string]any) []string {
-	var tags []string
-	if in, ok := cfg["inbounds"].([]any); ok {
-		for _, ibAny := range in {
-			if ib, ok := ibAny.(map[string]any); ok {
-				if tag, ok := ib["tag"].(string); ok {
-					tags = append(tags, tag)
+	current, generation := a.state.Snapshot()
+	if a.state.Format() == contract.XrayConfig {
+		normalized := make([]state.Update, len(updates))
+		for i, update := range updates {
+			normalized[i] = update
+			normalized[i].Memberships = append([]state.Membership(nil), update.Memberships...)
+			for j, member := range normalized[i].Memberships {
+				if member.Protocol == "vless" {
+					normalized[i].Memberships[j].User.Flow = transpiler.NormalizeFlow(member.User.Flow)
 				}
 			}
 		}
+		updates = normalized
 	}
-	return tags
-}
-
-// UserChanged is called after user add/remove; schedules a debounced user
-// hot-swap (no listener restart).
-func (a *App) UserChanged() {
-	a.logger.Info("user change; scheduling debounced hot-swap")
-	a.userMu.Lock()
-	if a.stopped {
-		a.userMu.Unlock()
-		return
-	}
-	if a.userTimer == nil {
-		epoch := a.userEpoch
-		a.userTimer = time.AfterFunc(a.debounceMs, func() {
-			a.userMu.Lock()
-			if a.stopped || epoch != a.userEpoch {
-				a.userMu.Unlock()
-				return
-			}
-			a.userTimer = nil
-			a.userMu.Unlock()
-			a.configMu.Lock()
-			defer a.configMu.Unlock()
-			if err := a.applyUserHotSwap(); err != nil {
-				a.logger.Error("hot-swap users failed; falling back to full apply", "error", err)
-				if err := a.applyToSingboxLocked(); err != nil {
-					a.logger.Error("full apply fallback failed", "error", err)
-				}
-			}
-		})
-	} else {
-		a.userTimer.Reset(a.debounceMs)
-	}
-	a.userMu.Unlock()
-}
-
-// applyUserHotSwap pushes the current VLESS and Shadowsocks 2022 user sets into
-// the running inbounds via UpdatableInbound.UpdateUsers / UpdateUsersByOptions,
-// avoiding a configuration rebuild/restart.
-func (a *App) applyUserHotSwap() error {
-	tags := a.state.InboundTags()
-
-	vless := make([]option.VLESSUser, 0, len(a.state.VlessUsers()))
-	for _, u := range a.state.VlessUsers() {
-		vless = append(vless, option.VLESSUser{Name: u.Name, UUID: u.UUID, Flow: u.Flow})
-	}
-	nVless, err := a.proc.UpdateVLESSUsers(tags, vless)
+	next, err := current.Replace(updates)
 	if err != nil {
 		return err
 	}
-
-	ss := make([]option.ShadowsocksUser, 0, len(a.state.SsUsers()))
-	for _, u := range a.state.SsUsers() {
-		ss = append(ss, option.ShadowsocksUser{Name: u.Name, Password: u.Password})
-	}
-	nSs, err := a.proc.UpdateSSUsers(tags, ss)
-	if err != nil {
+	if err = a.proc.ApplyUsers(next); err != nil {
 		return err
 	}
-
-	if nVless == 0 && nSs == 0 {
-		return fmt.Errorf("no updatable inbound updated")
+	if err = a.state.CommitUsers(next, generation); err != nil {
+		return err
 	}
+	a.queueRevocations(current, next)
+	return a.flushRevocations()
+}
 
-	allUserNames := transpiler.StatUserNames(a.state.VlessUsers(), a.state.SsUsers())
-	a.proc.UpdateStatsUsers(allUserNames)
-
-	a.logger.Info("users hot-swapped",
-		"vlessInbounds", nVless, "vlessUsers", len(vless),
-		"ssInbounds", nSs, "ssUsers", len(ss),
-		"statsUsers", len(allUserNames))
+func (a *App) queueRevocations(current, next state.Snapshot) {
+	if a.pendingRevocations == nil {
+		a.pendingRevocations = map[string]struct{}{}
+	}
+	for tag, ib := range current {
+		if ib.Protocol == "anytls" {
+			continue
+		}
+		for id, u := range ib.Users {
+			newer, ok := next[tag].Users[id]
+			if !ok || newer.Credential != u.Credential || newer.Flow != u.Flow {
+				a.pendingRevocations[id] = struct{}{}
+			}
+		}
+	}
+}
+func (a *App) flushRevocations() error {
+	if len(a.pendingRevocations) == 0 {
+		return nil
+	}
+	users := make([]string, 0, len(a.pendingRevocations))
+	for id := range a.pendingRevocations {
+		users = append(users, id)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := a.DropUsers(ctx, users); err != nil {
+		return fmt.Errorf("users applied but active connection revocation pending: %w", err)
+	}
+	clear(a.pendingRevocations)
 	return nil
 }
 
-// AddUser adds a VLESS user to desired state and schedules apply.
-func (a *App) AddUser(u transpiler.VlessUser) {
-	a.configMu.Lock()
-	defer a.configMu.Unlock()
-	a.state.AddUser(u)
-	a.UserChanged()
-}
-
-// AddSsUser adds a Shadowsocks 2022 user to desired state and schedules apply.
-func (a *App) AddSsUser(u transpiler.SsUser) {
-	a.configMu.Lock()
-	defer a.configMu.Unlock()
-	a.state.AddSsUser(u)
-	a.UserChanged()
-}
-
-// RemoveUser removes a VLESS user by UUID and schedules apply.
-func (a *App) RemoveUser(uuid string) bool {
-	a.configMu.Lock()
-	defer a.configMu.Unlock()
-	if !a.state.RemoveUser(uuid) {
-		return false
-	}
-	a.UserChanged()
-	return true
-}
-
-// RemoveSsUser removes a Shadowsocks 2022 user by name and schedules apply.
-func (a *App) RemoveSsUser(name string) bool {
-	a.configMu.Lock()
-	defer a.configMu.Unlock()
-	if !a.state.RemoveSsUser(name) {
-		return false
-	}
-	a.UserChanged()
-	return true
-}
-
-// Stop shuts down the sing-box process.
-func (a *App) Stop() {
-	a.configMu.Lock()
-	defer a.configMu.Unlock()
-	a.userMu.Lock()
-	a.stopped = true
-	a.userEpoch++
-	if a.userTimer != nil {
-		a.userTimer.Stop()
-		a.userTimer = nil
-	}
-	a.userMu.Unlock()
-	a.proc.Shutdown()
-}
+func (a *App) Stop() { a.configMu.Lock(); defer a.configMu.Unlock(); a.proc.Shutdown() }
 
 // Query runs QueryStats against the sing-box v2ray_api.
 func (a *App) Query(ctx context.Context, patterns []string, reset bool) ([]singbox.Counter, error) {
@@ -350,7 +258,7 @@ func (a *App) SysStats(ctx context.Context) (*singbox.SysStats, error) {
 // OnlineConnections returns the connections currently online, queried from the
 // sing-box clash API (/connections).
 func (a *App) OnlineConnections(ctx context.Context) ([]singbox.ClashConnection, error) {
-	return singbox.FetchOnlineConnections(ctx, a.clashAddr)
+	return singbox.FetchOnlineConnections(ctx, a.clashAddr, a.proc.ClashSecret())
 }
 
 // DropIPs terminates every active connection whose source IP is in the given
@@ -376,7 +284,7 @@ func (a *App) DropIPs(ctx context.Context, ips []string) (int, error) {
 		}
 		ids = append(ids, c.ID)
 	}
-	return singbox.CloseConnections(ctx, a.clashAddr, ids)
+	return singbox.CloseConnections(ctx, a.clashAddr, ids, a.proc.ClashSecret())
 }
 
 // DropUsers terminates every active connection for the given users (panel
@@ -401,7 +309,7 @@ func (a *App) DropUsers(ctx context.Context, userIds []string) (int, error) {
 		}
 		ids = append(ids, c.ID)
 	}
-	return singbox.CloseConnections(ctx, a.clashAddr, ids)
+	return singbox.CloseConnections(ctx, a.clashAddr, ids, a.proc.ClashSecret())
 }
 
 // OnlineIP is one source IP currently served for a user, with the time it was
@@ -422,7 +330,7 @@ type OnlineUser struct {
 // OnlineUsers groups the current online connections (from the sing-box clash
 // API /connections) by VLESS user name and resolves each to a panel userId.
 func (a *App) OnlineUsers(ctx context.Context) ([]OnlineUser, error) {
-	conns, err := singbox.FetchOnlineConnections(ctx, a.clashAddr)
+	conns, err := singbox.FetchOnlineConnections(ctx, a.clashAddr, a.proc.ClashSecret())
 	if err != nil {
 		return nil, err
 	}
@@ -495,20 +403,27 @@ func (a *App) IsOnline() bool {
 	return a.proc.IsRunning()
 }
 
-// RawConfigJSON returns the last stored panel config as a parsed map (or an
-// empty map if none), used by the /internal/get-config endpoint.
-func (a *App) RawConfigJSON() map[string]any {
+// ConfigView returns the submitted config in its original format. Native views
+// include current managed users, but never expose the injected management secret.
+func (a *App) ConfigView() (contract.ConfigFormat, map[string]any) {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+	format := a.state.Format()
 	raw := a.state.RawConfig()
 	if raw == nil {
-		return map[string]any{}
+		return format, map[string]any{}
 	}
-	var m map[string]any
-	_ = json.Unmarshal(raw, &m)
-	if m == nil {
-		m = map[string]any{}
+	config, err := nativeconfig.Decode(raw)
+	if err != nil {
+		return format, map[string]any{}
 	}
-	return m
+	if format == contract.SingBoxConfig {
+		users, _ := a.state.Snapshot()
+		users.WriteConfig(config)
+	}
+	return format, config
 }
+func (a *App) RawConfigJSON() map[string]any { _, config := a.ConfigView(); return config }
 
 // NftAvailable reports whether the nftables backend is usable.
 func (a *App) NftAvailable() bool {

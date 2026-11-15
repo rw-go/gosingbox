@@ -3,6 +3,8 @@ module github.com/rwnode/rwnode-gosingbox
 go 1.26.5
 
 require (
+	github.com/anytls/sing-anytls v0.0.11
+	github.com/gofrs/uuid/v5 v5.5.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/klauspost/compress v1.19.1
 	github.com/sagernet/sing v0.9.7-0.20260929150544-0ad23b637bd4
@@ -11,6 +13,8 @@ require (
 	github.com/sagernet/sing-vmess v0.2.9-0.20260929152519-9b95ab8c9478
 	google.golang.org/grpc v1.83.2
 )
+
+replace github.com/anytls/sing-anytls => ./third_party/sing-anytls
 
 replace github.com/sagernet/sing-box => bitbucket.org/rwnode/sing-box-fork v1.14.3-updatable.1
 
@@ -24,7 +28,6 @@ require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
 	github.com/anthropics/anthropic-sdk-go v1.26.0 // indirect
-	github.com/anytls/sing-anytls v0.0.11 // indirect
 	github.com/axiomhq/hyperloglog v0.0.0-20240319100328-84253e514e02 // indirect
 	github.com/caddyserver/certmagic v0.25.3-0.20260421143802-60d9d8b415d6 // indirect
 	github.com/caddyserver/zerossl v0.1.5 // indirect
@@ -51,7 +54,6 @@ require (
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
-	github.com/gofrs/uuid/v5 v5.5.1 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/certificate-transparency-go v1.3.2 // indirect

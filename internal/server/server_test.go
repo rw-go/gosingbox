@@ -2,14 +2,20 @@ package server
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/klauspost/compress/zstd"
+	"github.com/rwnode/rwnode-gosingbox/internal/controller"
+	"github.com/rwnode/rwnode-gosingbox/internal/payload"
 )
 
 func TestDecompressZstd(t *testing.T) {
@@ -45,6 +51,43 @@ func TestDecompressZstd(t *testing.T) {
 	}
 	if _, ok := obj["xrayConfig"]; !ok {
 		t.Fatalf("missing xrayConfig field")
+	}
+}
+
+func TestCapabilitiesRequirePanelJWT(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &ServerFactory{Payload: &payload.Payload{JWTPublicKey: &key.PublicKey}}
+	mux := http.NewServeMux()
+	controller.NewXray(nil, nil).Router(mux)
+	handler := f.jwtWrap(mux)
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{"exp": time.Now().Add(time.Minute).Unix()})
+	signed, err := token.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, bearer string
+		status       int
+	}{
+		{"missing", "", http.StatusUnauthorized},
+		{"invalid", "Bearer invalid", http.StatusUnauthorized},
+		{"authenticated", "Bearer " + signed, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/node/capabilities", nil)
+			req.Header.Set("Authorization", tc.bearer)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.status {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if rec.Code == http.StatusOK && !strings.Contains(rec.Body.String(), `"contractVersion":1`) {
+				t.Fatal("missing capability response")
+			}
+		})
 	}
 }
 

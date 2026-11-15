@@ -5,6 +5,13 @@
 
 分三类：**未实现**、**类似实现**、**sing-box 下无需实现**。
 
+## 原生 sing-box 下发与 AnyTLS —— 已实现范围
+
+- 节点原生 `coreType=singbox` 启动、管理 API 注入、失败回滚和配置查询已接通；具备管理 API 的构建声明原生输入和 AnyTLS。
+- 已完成按入站用户管理、AnyTLS 热更新、鉴权并发安全和旧会话撤销；公开 handler 的真实 TLS/代理测试及 race 回归通过。
+- 配套修改版 Panel 的数据库/Profile、权限、用户同步、前端与订阅已接通，并通过部署与生产数据副本联调。原生能力需要配套 Panel；长期高负载及任意客户端组合不在已验证范围。
+- 协议与失败语义见 [节点能力扩展 v1](docs/node-capabilities.md)、[原生配置入口](docs/native-config.md) 和 [用户生命周期](docs/user-lifecycle.md)。
+
 ## 一、未实现
 
 ### torrent-blocker 实时检测 —— 搁置
@@ -19,12 +26,11 @@
 
 ## 二、协议能力差异（数据面固有）
 
-sing-box 数据面仅支持 **VLESS + Reality + xtls-rprx-vision** 与
-**Shadowsocks 2022 (`2022-blake3-aes-256-gcm`)**。官方 Xray 数据面额外支持的
-VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输在本项目
-**不支持**（by design，无本地需求，故不实现）。
+本节点纳管协议为 **TCP VLESS**（原生保留 TLS/Reality 和 flow）、**SS2022 AES-128/256-GCM 多用户**、**普通 TLS 的 AnyTLS**。Xray 输入沿用原有转译限制。
 
-## 三、类似实现（等价但细节差异，均不影响 Panel 对接）
+VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输当前不在本项目纳管范围，原生路径明确拒绝。仅允许回环 `direct` 辅助入站，非空 endpoints/services 暂不支持。这是本项目管理范围限制，不代表上游 sing-box 不支持这些能力。
+
+## 三、实现与行为差异
 
 | 官方 | gosingbox | 影响 |
 |---|---|---|
@@ -33,8 +39,8 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
 | 响应 `compression()` + `helmet()` | 无 | 低（非 contract） |
 | zod 全量 schema 校验（UUID/字段类型/端口范围） | 手动 json decode，校验较松 | 中（畸形请求可能到 sing-box 才报错） |
 | `drop-ips`/`drop-users` 响应 `GenericResponseModel {success}` | `{success, error}` | 低（多字段，Panel zod 会 strip） |
-| handler 内部 inbound-tag 生命周期（`addXtlsConfigInbound`/`removeUserFromInbound`/`addUserToInbound`） | state + debounce 热插拔 | 无（机制不同、效果等价） |
-| `DISABLE_HASHED_SET_CHECK`（按 `internals.hashes` 决定是否重启 core） | `bytes.Equal` + `forceRestart` | 低（热插拔本就避免重启） |
+| handler 内部 inbound-tag 生命周期（`addXtlsConfigInbound`/`removeUserFromInbound`/`addUserToInbound`） | 按 tag 与稳定用户 ID 保存授权，串行同步热更新 | 单／批量替换授权集合；多入站应用非瞬时原子，失败恢复详见用户生命周期文档 |
+| `DISABLE_HASHED_SET_CHECK`（按 `internals.hashes` 决定是否重启 core） | 比较输入格式及有效基础配置；用户变化热更新，`forceRestart` 强制重建 | 低（热插拔本就避免重启） |
 | HTTP 超时（handshake 10s / keepAlive 60s / headers 61s） | `ReadHeaderTimeout` 10s / `IdleTimeout` 60s | 低（近似） |
 
 ## 四、sing-box 下无需实现（架构不适用 / 负收益 / 无需求）
@@ -56,7 +62,7 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
 | 控制器 | 端点 | 状态 |
 |---|---|---|
 | xray | start / stop / healthcheck | ✅ |
-| stats | get-users-stats | ✅ v2ray_api QueryStats 聚合（VLESS + SS2022） |
+| stats | get-users-stats | ✅ v2ray_api QueryStats 聚合（VLESS + SS2022 + AnyTLS） |
 | stats | get-system-stats | ✅（含 xrayInfo + system stats；xrayInfo 空时按官方返回 500） |
 | stats | get-inbound/outbound-stats | ✅ |
 | stats | get-all-inbounds/outbounds-stats | ✅ |
@@ -64,7 +70,7 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
 | stats | get-user-ip-list / get-users-ip-list | ✅ clash_api `/connections`（`userId`=email） |
 | stats | get-user-online-status | ✅ clash_api `/connections` |
 | stats | get-geocheck | ✅ 内置 geocheck 二进制 |
-| handler | add-user / add-users / remove-user / remove-users | ✅ 无感热插拔（VLESS + SS2022，debounce + `UpdateUsers`） |
+| handler | add-user / add-users / remove-user / remove-users | ✅ 同步热插拔（VLESS + SS2022 + AnyTLS，按入站管理） |
 | handler | drop-users-connections / drop-ips | ✅ clash_api `DELETE /connections/:id`（按 email / sourceIP 匹配；跳过白名单 + 默认忽略 IP） |
 | plugin | sync（sharedLists + ingress/egress filter + connection-drop + preStart + postStart） | ✅（`ipList`/`asList` 解析，`ext:` 展开，cleanupSockets，connection-drop 白名单，postStart webhook） |
 | plugin | nftables block-ips / unblock-ips / recreate-tables | ✅ `nft` CLI（含 `NFTABLES_ACCEPT_REPLY_TRAFFIC`） |

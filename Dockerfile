@@ -3,11 +3,13 @@
 FROM golang:1.26.5-alpine AS build
 
 ARG TARGETARCH
+ARG NODE_SEMVER=3.4.1
 ARG SINGBOX_VERSION=1.14.3
 ARG GEOCHECK_VERSION=0.3.0-cn
 
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY third_party/sing-anytls ./third_party/sing-anytls
 # cache mount：与 aialloy 项目共用同一份 Go 模块缓存（同一 target 即共享），
 # 两边都依赖 xray/sing 生态，重复的模块只下载一次。
 RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
@@ -19,7 +21,7 @@ RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build -trimpath -tags "with_clash_api,with_v2ray_api,with_utls,with_acme,with_quic" \
-    -ldflags "-s -w -X github.com/rwnode/rwnode-gosingbox/internal/app.NodeVersion=3.4.3 -X github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}" \
+    -ldflags "-s -w -X github.com/rwnode/rwnode-gosingbox/internal/app.NodeVersion=${NODE_SEMVER} -X github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}" \
     -o /out/gosingbox ./cmd/rw-node-singbox
 
 FROM alpine:3.21 AS geocheck
@@ -44,10 +46,15 @@ RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
 
 FROM alpine:3.21
 
+ARG PACKAGE_VERSION=3.4.1.19
+ARG SOURCE_REVISION=unknown
+
 LABEL org.opencontainers.image.title="gosingbox" \
+      org.opencontainers.image.version="${PACKAGE_VERSION}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.description="Remnawave node with embedded sing-box data plane" \
-      org.opencontainers.image.url="https://github.com/rwnode/rwnode-gosingbox" \
-      org.opencontainers.image.source="https://github.com/rwnode/rwnode-gosingbox" \
+      org.opencontainers.image.url="https://bitbucket.org/rwnode/rwnode-gosingbox" \
+      org.opencontainers.image.source="https://bitbucket.org/rwnode/rwnode-gosingbox" \
       org.opencontainers.image.vendor="rwnode" \
       org.opencontainers.image.licenses="AGPL-3.0"
 

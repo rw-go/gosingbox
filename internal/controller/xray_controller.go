@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/rwnode/rwnode-gosingbox/internal/app"
+	"github.com/rwnode/rwnode-gosingbox/internal/contract"
 )
 
 // Xray handles /node/xray/* routes.
@@ -23,6 +24,7 @@ func NewXray(a *app.App, log *slog.Logger) *Xray {
 
 // Router mounts /node/xray/* sub-paths.
 func (x *Xray) Router(mux *http.ServeMux) {
+	mux.HandleFunc("/node/capabilities", x.capabilities)
 	mux.HandleFunc("/node/xray/start", x.start)
 	mux.HandleFunc("/node/xray/stop", x.stop)
 	mux.HandleFunc("/node/xray/healthcheck", x.health)
@@ -30,6 +32,7 @@ func (x *Xray) Router(mux *http.ServeMux) {
 
 // StartXrayRequest is the body of POST /node/xray/start (panel pushes config).
 type StartXrayRequest struct {
+	CoreType  contract.ConfigFormat `json:"coreType,omitempty"`
 	Internals struct {
 		Metadata     json.RawMessage `json:"metadata"`
 		ForceRestart bool            `json:"forceRestart"`
@@ -51,6 +54,10 @@ func (x *Xray) start(w http.ResponseWriter, r *http.Request) {
 		}})
 		return
 	}
+	if !contract.CurrentCapabilities().Accepts(req.CoreType.WithDefault()) {
+		x.writeStartResponse(w, false, "config format is not supported by this node: "+string(req.CoreType))
+		return
+	}
 	x.log.Debug("start: decoded request", "xrayConfigBytes", len(req.XrayConfig), "internals", fmt.Sprintf("%+v", req.Internals))
 	if len(req.XrayConfig) == 0 {
 		x.log.Error("start: xrayConfig is empty")
@@ -61,7 +68,7 @@ func (x *Xray) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := x.app.StartWithForce(req.XrayConfig, req.Internals.ForceRestart); err != nil {
+	if err := x.app.StartConfig(req.XrayConfig, req.CoreType.WithDefault(), req.Internals.ForceRestart); err != nil {
 		x.log.Error("start failed", "error", err)
 		x.writeStartResponse(w, false, err.Error())
 		return
@@ -69,6 +76,16 @@ func (x *Xray) start(w http.ResponseWriter, r *http.Request) {
 	x.log.Info("start: sing-box started successfully")
 	x.app.RunPostStart(req.Internals.Metadata)
 	x.writeStartResponse(w, true, "")
+}
+
+// Registered on the panel mux, this endpoint inherits the existing mTLS/JWT
+// middleware. It is not exposed on the separate internal REST socket.
+func (x *Xray) capabilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, envelope{Response: contract.CurrentCapabilities()})
 }
 
 // writeStartResponse emits the panel's StartXrayCommand.ResponseSchema shape:

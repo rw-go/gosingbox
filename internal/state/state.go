@@ -1,167 +1,300 @@
-// Package state holds the desired sing-box state: the latest panel config and
-// the current VLESS/SS user set. It is the Go equivalent of the Node.js
-// InternalService (source of truth for the user-change pipeline).
+// Package state stores the last applied configuration and per-inbound users.
+// Candidate snapshots are built and validated before applying or committing.
 package state
 
 import (
 	"encoding/json"
+	"fmt"
+	"github.com/rwnode/rwnode-gosingbox/internal/contract"
+	"slices"
 	"sync"
-
-	"github.com/rwnode/rwnode-gosingbox/internal/transpiler"
 )
 
-// State is the thread-safe desired-state store.
+type User struct {
+	ID         string
+	Credential string
+	Flow       string
+	HashUUID   string
+}
+type Inbound struct {
+	Cipher   string
+	Protocol string
+	Users    map[string]User
+}
+type Snapshot map[string]Inbound
+
+type Membership struct {
+	Tag, Protocol string
+	User          User
+}
+
+// Update replaces one user's entire authorization set on this node.
+// Empty Memberships revoke that user without clearing unrelated users.
+type Update struct {
+	ID           string
+	HashUUID     string
+	PreviousUUID string
+	Memberships  []Membership
+}
+
 type State struct {
-	mu sync.RWMutex
-
-	rawConfig   []byte
-	hasConfig   bool
-	vlessUsers  []transpiler.VlessUser // desired VLESS users
-	ssUsers     []transpiler.SsUser    // desired Shadowsocks 2022 users
-	inboundTags []string               // registered inbound tags
+	mu         sync.RWMutex
+	raw        []byte
+	users      Snapshot
+	generation uint64
+	format     contract.ConfigFormat
 }
 
-// New creates an empty state.
-func New() *State {
-	return &State{}
-}
-
-// CommitConfig atomically commits a successfully applied panel config together
-// with its already-validated users and inbound tags.
-func (s *State) CommitConfig(raw []byte, vlessUsers []transpiler.VlessUser, ssUsers []transpiler.SsUser, inboundTags []string) {
-	configCopy := make([]byte, len(raw))
-	copy(configCopy, raw)
-	vlessCopy := append([]transpiler.VlessUser(nil), vlessUsers...)
-	ssCopy := append([]transpiler.SsUser(nil), ssUsers...)
-	tagsCopy := append([]string(nil), inboundTags...)
-
-	s.mu.Lock()
-	s.rawConfig = configCopy
-	s.hasConfig = true
-	s.vlessUsers = vlessCopy
-	s.ssUsers = ssCopy
-	s.inboundTags = tagsCopy
-	s.mu.Unlock()
-}
-
-// SetRawConfig stores the panel xray config and rebuilds the user set from it.
-func (s *State) SetRawConfig(raw []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.rawConfig = raw
-	s.hasConfig = true
-	var cfg map[string]any
-	if err := json.Unmarshal(raw, &cfg); err == nil {
-		s.vlessUsers = transpiler.UsersFromConfig(cfg)
-		s.ssUsers = transpiler.SsUsersFromConfig(cfg)
-	} else {
-		s.vlessUsers = nil
-		s.ssUsers = nil
-	}
-}
-
-// RawConfig returns the last panel config.
+func New() *State { return &State{users: Snapshot{}} }
 func (s *State) RawConfig() []byte {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if !s.hasConfig {
-		return nil
-	}
-	out := make([]byte, len(s.rawConfig))
-	copy(out, s.rawConfig)
-	return out
+	return append([]byte(nil), s.raw...)
 }
-
-// HasConfig reports whether a panel config has been received.
-func (s *State) HasConfig() bool {
+func (s *State) HasConfig() bool { s.mu.RLock(); defer s.mu.RUnlock(); return s.raw != nil }
+func (s *State) Snapshot() (Snapshot, uint64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.hasConfig
+	return s.users.Clone(), s.generation
 }
-
-// VlessUsers returns the current desired VLESS user set.
-func (s *State) VlessUsers() []transpiler.VlessUser {
+func (s *State) Format() contract.ConfigFormat {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]transpiler.VlessUser, len(s.vlessUsers))
-	copy(out, s.vlessUsers)
+	return s.format.WithDefault()
+}
+func (s *State) Commit(raw []byte, users Snapshot, format contract.ConfigFormat) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.raw = append([]byte(nil), raw...)
+	s.users = users.Clone()
+	s.generation++
+	s.format = format
+}
+func (s *State) CommitUsers(users Snapshot, generation uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation != s.generation {
+		return fmt.Errorf("configuration generation changed")
+	}
+	s.users = users.Clone()
+	return nil
+}
+func (s Snapshot) Clone() Snapshot {
+	out := Snapshot{}
+	for tag, ib := range s {
+		users := map[string]User{}
+		for id, u := range ib.Users {
+			users[id] = u
+		}
+		out[tag] = Inbound{Protocol: ib.Protocol, Cipher: ib.Cipher, Users: users}
+	}
 	return out
 }
-
-// AddUser adds or updates a desired VLESS user by UUID.
-func (s *State) AddUser(u transpiler.VlessUser) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	u.Flow = transpiler.NormalizeFlow(u.Flow)
-	for i := range s.vlessUsers {
-		if s.vlessUsers[i].UUID == u.UUID {
-			s.vlessUsers[i] = u
-			return
+func (s Snapshot) Names() []string {
+	set := map[string]bool{}
+	for _, ib := range s {
+		for id := range ib.Users {
+			set[id] = true
 		}
 	}
-	s.vlessUsers = append(s.vlessUsers, u)
-}
-
-// RemoveUser removes a user by UUID.
-func (s *State) RemoveUser(uuid string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.vlessUsers {
-		if s.vlessUsers[i].UUID == uuid {
-			s.vlessUsers = append(s.vlessUsers[:i], s.vlessUsers[i+1:]...)
-			return true
-		}
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
 	}
-	return false
-}
-
-// SsUsers returns the current desired Shadowsocks 2022 user set.
-func (s *State) SsUsers() []transpiler.SsUser {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]transpiler.SsUser, len(s.ssUsers))
-	copy(out, s.ssUsers)
+	slices.Sort(out)
 	return out
 }
-
-// AddSsUser adds or updates a desired Shadowsocks 2022 user by name.
-func (s *State) AddSsUser(u transpiler.SsUser) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.ssUsers {
-		if s.ssUsers[i].Name == u.Name {
-			s.ssUsers[i] = u
-			return
-		}
+func (s Snapshot) Tags() []string {
+	out := make([]string, 0, len(s))
+	for tag := range s {
+		out = append(out, tag)
 	}
-	s.ssUsers = append(s.ssUsers, u)
-}
-
-// RemoveSsUser removes a Shadowsocks 2022 user by name.
-func (s *State) RemoveSsUser(name string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.ssUsers {
-		if s.ssUsers[i].Name == name {
-			s.ssUsers = append(s.ssUsers[:i], s.ssUsers[i+1:]...)
-			return true
-		}
-	}
-	return false
-}
-
-// SetInboundTags records the inbound tags from the last transpile.
-func (s *State) SetInboundTags(tags []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inboundTags = append([]string(nil), tags...)
-}
-
-// InboundTags returns the registered inbound tags.
-func (s *State) InboundTags() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]string, len(s.inboundTags))
-	copy(out, s.inboundTags)
+	slices.Sort(out)
 	return out
+}
+func (s Snapshot) OrderedUsers(tag string) []User {
+	ib := s[tag]
+	ids := make([]string, 0, len(ib.Users))
+	for id := range ib.Users {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	out := make([]User, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, ib.Users[id])
+	}
+	return out
+}
+func (s Snapshot) ResolveID(id string, aliases ...string) (string, error) {
+	found := id
+	for _, ib := range s {
+		for uid, u := range ib.Users {
+			for _, alias := range aliases {
+				if alias != "" && (u.Credential == alias || u.HashUUID == alias) {
+					if found != "" && found != uid {
+						return "", fmt.Errorf("user identity conflicts with credential index")
+					}
+					found = uid
+				}
+			}
+		}
+	}
+	if found == "" {
+		return "", fmt.Errorf("cannot resolve stable user identity")
+	}
+	return found, nil
+}
+func (s Snapshot) Replace(updates []Update) (Snapshot, error) {
+	next := s.Clone()
+	seen := map[string]bool{}
+	for _, update := range updates {
+		id, err := s.ResolveID(update.ID, update.PreviousUUID, update.HashUUID)
+		if err != nil {
+			return nil, err
+		}
+		if seen[id] {
+			return nil, fmt.Errorf("duplicate user in update: %q", id)
+		}
+		seen[id] = true
+		for _, ib := range next {
+			delete(ib.Users, id)
+		}
+		tags := map[string]bool{}
+		for _, member := range update.Memberships {
+			ib, ok := next[member.Tag]
+			if !ok || member.Tag == "" {
+				return nil, fmt.Errorf("unknown managed inbound: %q", member.Tag)
+			}
+			if ib.Protocol != member.Protocol {
+				return nil, fmt.Errorf("inbound protocol mismatch: %q", member.Tag)
+			}
+			if tags[member.Tag] {
+				return nil, fmt.Errorf("duplicate inbound membership: %q", member.Tag)
+			}
+			tags[member.Tag] = true
+			if member.User.ID != id {
+				return nil, fmt.Errorf("inconsistent user identity")
+			}
+			user := member.User
+			user.HashUUID = update.HashUUID
+			ib.Users[id] = user
+		}
+	}
+	if err := next.Validate(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+func (s Snapshot) Validate() error {
+	for tag, ib := range s {
+		if tag == "" {
+			return fmt.Errorf("empty inbound tag")
+		}
+		if ib.Protocol != "vless" && ib.Protocol != "shadowsocks22" && ib.Protocol != "anytls" {
+			return fmt.Errorf("unsupported managed protocol: %q", ib.Protocol)
+		}
+		credentials := map[string]bool{}
+		for id, u := range ib.Users {
+			if id == "" || id != u.ID || u.Credential == "" {
+				return fmt.Errorf("invalid user identity or credential on %q", tag)
+			}
+			if credentials[u.Credential] {
+				return fmt.Errorf("duplicate credential on %q", tag)
+			}
+			credentials[u.Credential] = true
+			if ib.Protocol == "vless" && u.Flow != "" && u.Flow != "xtls-rprx-vision" {
+				return fmt.Errorf("unsupported VLESS flow on %q", tag)
+			}
+		}
+	}
+	return nil
+}
+
+// FromConfig extracts managed users from already prepared sing-box JSON. A
+// single-password Shadowsocks inbound is intentionally not a managed user list.
+func FromConfig(config map[string]any) (Snapshot, error) {
+	data, err := json.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
+	var cfg struct {
+		Inbounds []struct {
+			Type, Tag, Method string
+			Managed           bool
+			Users             []struct{ Name, UUID, Password, Flow string }
+		} `json:"inbounds"`
+	}
+	if err = json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	result := Snapshot{}
+	for _, ib := range cfg.Inbounds {
+		protocol := ib.Type
+		if protocol == "shadowsocks" {
+			if len(ib.Users) == 0 && !ib.Managed {
+				continue
+			}
+			protocol = "shadowsocks22"
+		}
+		if protocol != "vless" && protocol != "shadowsocks22" && protocol != "anytls" {
+			continue
+		}
+		if _, ok := result[ib.Tag]; ok {
+			return nil, fmt.Errorf("duplicate inbound tag: %q", ib.Tag)
+		}
+		users := map[string]User{}
+		for _, u := range ib.Users {
+			credential := u.Password
+			hash := ""
+			if protocol == "vless" {
+				credential = u.UUID
+				hash = u.UUID
+			}
+			if protocol == "anytls" {
+				hash = u.Password
+			}
+			if _, ok := users[u.Name]; ok {
+				return nil, fmt.Errorf("duplicate user identity on %q", ib.Tag)
+			}
+			users[u.Name] = User{ID: u.Name, Credential: credential, Flow: u.Flow, HashUUID: hash}
+		}
+		result[ib.Tag] = Inbound{Protocol: protocol, Cipher: ib.Method, Users: users}
+	}
+	return result, result.Validate()
+}
+
+// WriteConfig updates only managed user lists in a decoded native config view.
+// The caller owns config; the snapshot is not modified.
+func (s Snapshot) WriteConfig(config map[string]any) {
+	inbounds, _ := config["inbounds"].([]any)
+	for _, value := range inbounds {
+		inbound, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		tag, _ := inbound["tag"].(string)
+		managed, ok := s[tag]
+		if !ok {
+			continue
+		}
+		users := make([]any, 0, len(managed.Users))
+		for _, u := range s.OrderedUsers(tag) {
+			user := map[string]any{"name": u.ID}
+			if managed.Protocol == "vless" {
+				user["uuid"] = u.Credential
+				user["flow"] = u.Flow
+			} else {
+				user["password"] = u.Credential
+			}
+			users = append(users, user)
+		}
+		inbound["users"] = users
+		if managed.Protocol == "shadowsocks22" {
+			if len(users) == 0 {
+				inbound["managed"] = true
+			} else {
+				delete(inbound, "managed")
+			}
+		}
+	}
 }

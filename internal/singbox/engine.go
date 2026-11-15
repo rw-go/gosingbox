@@ -6,13 +6,17 @@ package singbox
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
 
+	managedanytls "github.com/rwnode/rwnode-gosingbox/internal/protocol/anytls"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/include"
 	"github.com/sagernet/sing-box/option"
@@ -22,11 +26,12 @@ import (
 
 // Engine runs sing-box in-process.
 type Engine struct {
-	logger    *slog.Logger
-	statsAddr string
-	clashAddr string
-	logLevel  string
-	version   string
+	logger      *slog.Logger
+	statsAddr   string
+	clashAddr   string
+	clashSecret string
+	logLevel    string
+	version     string
 
 	mu            sync.Mutex
 	ctx           context.Context
@@ -65,18 +70,22 @@ func NewEngine(opts Options) *Engine {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
+	secret := make([]byte, 32)
+	_, _ = rand.Read(secret) // Go 1.26 crypto/rand terminates on entropy failure.
 	return &Engine{
-		logger:    opts.Logger,
-		statsAddr: opts.StatsAddr,
-		clashAddr: opts.ClashAddr,
-		logLevel:  opts.LogLevel,
-		version:   constant.Version,
+		logger:      opts.Logger,
+		statsAddr:   opts.StatsAddr,
+		clashAddr:   opts.ClashAddr,
+		clashSecret: hex.EncodeToString(secret),
+		logLevel:    opts.LogLevel,
+		version:     constant.Version,
 	}
 }
 
-func (e *Engine) StatsAddr() string { return e.statsAddr }
-func (e *Engine) ClashAddr() string { return e.clashAddr }
-func (e *Engine) LogLevel() string  { return e.logLevel }
+func (e *Engine) StatsAddr() string   { return e.statsAddr }
+func (e *Engine) ClashAddr() string   { return e.clashAddr }
+func (e *Engine) ClashSecret() string { return e.clashSecret }
+func (e *Engine) LogLevel() string    { return e.logLevel }
 
 // IsRunning reports whether the embedded box is started.
 func (e *Engine) IsRunning() bool {
@@ -110,6 +119,7 @@ func (e *Engine) parseOptions(config map[string]any) (context.Context, option.Op
 		return nil, option.Options{}, fmt.Errorf("marshal config: %w", err)
 	}
 	ctx := include.Context(context.Background())
+	managedanytls.RegisterInbound(service.FromContext[adapter.InboundRegistry](ctx).(*inbound.Registry))
 	opts, err := singJSON.UnmarshalExtendedContext[option.Options](ctx, data)
 	if err != nil {
 		return nil, option.Options{}, fmt.Errorf("parse sing-box options: %w", err)
@@ -138,13 +148,13 @@ func (e *Engine) startLocked(ctx context.Context, opts option.Options) error {
 	return nil
 }
 
-// ApplyConfig transpile output (already JSON-marshalable) into an option.Options
+// ApplyConfig decodes prepared native or transpiled JSON into option.Options
 // and (re)start the embedded box. Because this path fully re-binds listeners it
-// is the "restart" fallback; user changes should use UpdateVLESSUsers instead.
+// is the "restart" fallback; user changes should use ApplyUsers instead.
 //
 // The new config is parsed before the previous instance is stopped, and on a
-// create/start failure the previous instance is restored best-effort so a bad
-// config never leaves the node fully down.
+// create/start failure the previous instance is restored best-effort. If that
+// also fails the error explicitly reports that the core is offline.
 func (e *Engine) ApplyConfig(config map[string]any) error {
 	ctx, opts, err := e.parseOptions(config)
 	if err != nil {
@@ -166,12 +176,16 @@ func (e *Engine) ApplyConfig(config map[string]any) error {
 			if rctx, ropts, rerr := e.parseOptions(prev); rerr == nil {
 				if serr := e.startLocked(rctx, ropts); serr != nil {
 					e.logger.Warn("rollback to previous config failed", "error", serr)
+					e.currentConfig = nil
+					return fmt.Errorf("apply config: %w; rollback failed: %v; core is offline", err, serr)
 				} else {
 					e.currentConfig = prev
 					return fmt.Errorf("apply config: %w (rolled back)", err)
 				}
 			} else {
 				e.logger.Warn("rollback config parse failed", "error", rerr)
+				e.currentConfig = nil
+				return fmt.Errorf("apply config: %w; rollback parse failed: %v; core is offline", err, rerr)
 			}
 		}
 		e.currentConfig = nil
@@ -273,6 +287,13 @@ func (e *Engine) updateCurrentUsersLocked(inboundType, tag string, users any) {
 			continue
 		}
 		inbound["users"] = users
+		if inboundType == "shadowsocks" {
+			if list, ok := users.([]option.ShadowsocksUser); ok && len(list) == 0 {
+				inbound["managed"] = true
+			} else {
+				delete(inbound, "managed")
+			}
+		}
 		e.refreshCurrentStatUsersLocked()
 		return
 	}
@@ -288,7 +309,7 @@ func (e *Engine) refreshCurrentStatUsersLocked() {
 	var names []string
 	for _, value := range inbounds {
 		inbound, ok := value.(map[string]any)
-		if !ok || (inbound["type"] != "vless" && inbound["type"] != "shadowsocks") {
+		if !ok || (inbound["type"] != "vless" && inbound["type"] != "shadowsocks" && inbound["type"] != "anytls") {
 			continue
 		}
 		data, err := json.Marshal(inbound["users"])

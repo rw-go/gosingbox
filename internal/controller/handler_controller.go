@@ -4,16 +4,17 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/rwnode/rwnode-gosingbox/internal/app"
-	"github.com/rwnode/rwnode-gosingbox/internal/transpiler"
+	"github.com/rwnode/rwnode-gosingbox/internal/contract"
+	"github.com/rwnode/rwnode-gosingbox/internal/state"
 )
 
-// Handler handles /node/handler/* routes. User add/remove mutate the desired
-// user set and trigger a debounced sing-box restart (no HandlerService).
+// Handler applies complete user authorization sets synchronously by inbound tag.
 type Handler struct {
 	app *app.App
 	log *slog.Logger
@@ -92,44 +93,26 @@ func (h *Handler) addUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var username string
-	if len(req.Data) > 0 {
-		username = req.Data[0].User
-	}
-
-	// On UUID rotation (prevVlessUuid present) the panel swaps a user's VLESS
-	// key: drop the old user and (below) terminate its live connections so the
-	// client re-auths with the new key. Mirrors official node 3.4.1 addUser.
-	if req.HashData.PrevVlessUID != "" {
-		h.app.RemoveUser(req.HashData.PrevVlessUID)
-	}
-
+	// Reject the whole request before UUID rotation or any user mutation.
 	for _, item := range req.Data {
-		switch item.Type {
-		case "vless":
-			uuid := firstNonEmpty(item.UUID, req.HashData.VlessUUID)
-			if uuid == "" {
-				continue
-			}
-			h.app.AddUser(transpiler.VlessUser{Name: firstNonEmpty(item.User, uuid), UUID: uuid, Flow: item.Flow})
-		case "shadowsocks22":
-			if item.Password == "" {
-				continue
-			}
-			name := firstNonEmpty(item.User, item.Password)
-			h.app.AddSsUser(transpiler.SsUser{Name: name, Password: item.Password})
+		if h.rejectUnsupportedProtocol(w, item.Type) {
+			return
 		}
 	}
-
-	if req.HashData.PrevVlessUID != "" && username != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if _, err := h.app.DropUsers(ctx, []string{username}); err != nil {
-			h.log.Debug("add-user: drop previous connections failed", "error", err)
+	update := state.Update{HashUUID: req.HashData.VlessUUID, PreviousUUID: req.HashData.PrevVlessUID}
+	for _, item := range req.Data {
+		if update.ID == "" {
+			update.ID = item.User
 		}
+		credential := item.Password
+		flow := ""
+		if item.Type == "vless" {
+			credential = firstNonEmpty(item.UUID, req.HashData.VlessUUID)
+			flow = item.Flow
+		}
+		update.Memberships = append(update.Memberships, state.Membership{Tag: item.Tag, Protocol: item.Type, User: state.User{ID: item.User, Credential: credential, Flow: flow}})
 	}
-
-	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
+	h.writeUserResult(w, h.app.UpdateUsers([]state.Update{update}))
 }
 
 func (h *Handler) addUsers(w http.ResponseWriter, r *http.Request) {
@@ -144,28 +127,48 @@ func (h *Handler) addUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, u := range req.Users {
 		for _, ib := range u.InboundData {
-			switch ib.Type {
-			case "vless":
-				if u.UserData.VlessUUID == "" {
-					continue
-				}
-				h.app.AddUser(transpiler.VlessUser{
-					Name: firstNonEmpty(u.UserData.UserID, u.UserData.VlessUUID),
-					UUID: u.UserData.VlessUUID,
-					Flow: ib.Flow,
-				})
-			case "shadowsocks22":
-				if u.UserData.SSPassword == "" {
-					continue
-				}
-				h.app.AddSsUser(transpiler.SsUser{
-					Name:     u.UserData.UserID,
-					Password: base64.StdEncoding.EncodeToString([]byte(u.UserData.SSPassword)),
-				})
+			if h.rejectUnsupportedProtocol(w, ib.Type) {
+				return
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
+	updates := make([]state.Update, 0, len(req.Users))
+	for _, u := range req.Users {
+		update := state.Update{ID: u.UserData.UserID, HashUUID: u.UserData.VlessUUID, PreviousUUID: u.UserData.HashUUID}
+		for _, ib := range u.InboundData {
+			credential := u.UserData.VlessUUID
+			flow := ""
+			if ib.Type == "vless" {
+				flow = ib.Flow
+			}
+			if ib.Type == "shadowsocks22" {
+				credential = base64.StdEncoding.EncodeToString([]byte(u.UserData.SSPassword))
+			}
+			update.Memberships = append(update.Memberships, state.Membership{Tag: ib.Tag, Protocol: ib.Type, User: state.User{ID: u.UserData.UserID, Credential: credential, Flow: flow}})
+		}
+		updates = append(updates, update)
+	}
+	h.writeUserResult(w, h.app.UpdateUsers(updates))
+}
+
+func (h *Handler) writeUserResult(w http.ResponseWriter, err error) {
+	var message any
+	if err != nil {
+		message = err.Error()
+	}
+	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": err == nil, "error": message}})
+}
+
+func (h *Handler) rejectUnsupportedProtocol(w http.ResponseWriter, protocol string) bool {
+	// The AnyTLS handler also remains testable in builds without management APIs.
+	if protocol == "anytls" || contract.CurrentCapabilities().Manages(protocol) {
+		return false
+	}
+	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{
+		"success": false,
+		"error":   fmt.Sprintf("unsupported user protocol: %q", protocol),
+	}})
+	return true
 }
 
 func (h *Handler) removeUser(w http.ResponseWriter, r *http.Request) {
@@ -178,20 +181,7 @@ func (h *Handler) removeUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"success": false, "error": err.Error()}})
 		return
 	}
-	h.app.RemoveUser(req.HashData.VlessUUID)
-	h.app.RemoveSsUser(req.Username)
-
-	// Immediately terminate live connections for the removed user, aligning with
-	// official node 3.4.1 DropConnectionsEvent on user removal.
-	if req.Username != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if _, err := h.app.DropUsers(ctx, []string{req.Username}); err != nil {
-			h.log.Debug("remove-user: drop connections failed", "error", err)
-		}
-	}
-
-	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
+	h.writeUserResult(w, h.app.UpdateUsers([]state.Update{{ID: req.Username, HashUUID: req.HashData.VlessUUID}}))
 }
 
 func (h *Handler) removeUsers(w http.ResponseWriter, r *http.Request) {
@@ -204,26 +194,11 @@ func (h *Handler) removeUsers(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, envelope{Response: map[string]any{"success": false, "error": err.Error()}})
 		return
 	}
-	dropUserNames := make([]string, 0, len(req.Users))
+	updates := make([]state.Update, 0, len(req.Users))
 	for _, u := range req.Users {
-		h.app.RemoveUser(u.HashUUID)
-		h.app.RemoveSsUser(u.UserID)
-		if u.UserID != "" {
-			dropUserNames = append(dropUserNames, u.UserID)
-		}
+		updates = append(updates, state.Update{ID: u.UserID, HashUUID: u.HashUUID})
 	}
-
-	// Immediately terminate live connections for all removed users, aligning with
-	// official node 3.4.1 DropConnectionsEvent on user removal.
-	if len(dropUserNames) > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if _, err := h.app.DropUsers(ctx, dropUserNames); err != nil {
-			h.log.Debug("remove-users: drop connections failed", "error", err)
-		}
-	}
-
-	writeJSON(w, http.StatusOK, envelope{Response: map[string]any{"success": true, "error": nil}})
+	h.writeUserResult(w, h.app.UpdateUsers(updates))
 }
 
 func (h *Handler) dropUsersConnections(w http.ResponseWriter, r *http.Request) {

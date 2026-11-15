@@ -29,10 +29,13 @@ type clashConnectionsResponse struct {
 // and returns the connections that are online right now. When sing-box is not
 // reachable it returns a non-nil error; callers typically degrade that into an
 // empty "nobody online" result instead of failing the panel request.
-func FetchOnlineConnections(ctx context.Context, clashAddr string) ([]ClashConnection, error) {
+func FetchOnlineConnections(ctx context.Context, clashAddr string, secret ...string) ([]ClashConnection, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+clashAddr+"/connections", nil)
 	if err != nil {
 		return nil, err
+	}
+	if len(secret) > 0 && secret[0] != "" {
+		req.Header.Set("Authorization", "Bearer "+secret[0])
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
@@ -55,7 +58,7 @@ func FetchOnlineConnections(ctx context.Context, clashAddr string) ([]ClashConne
 // sing-box clash API DELETE /connections/:id endpoint. Missing/unknown ids are
 // ignored (the connection may already be gone). Returns the number of ids that
 // were successfully closed.
-func CloseConnections(ctx context.Context, clashAddr string, ids []string) (int, error) {
+func CloseConnections(ctx context.Context, clashAddr string, ids []string, secret ...string) (int, error) {
 	client := &http.Client{Timeout: 3 * time.Second}
 	closed := 0
 	var firstErr error
@@ -66,6 +69,9 @@ func CloseConnections(ctx context.Context, clashAddr string, ids []string) (int,
 		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, "http://"+clashAddr+"/connections/"+id, nil)
 		if err != nil {
 			return closed, err
+		}
+		if len(secret) > 0 && secret[0] != "" {
+			req.Header.Set("Authorization", "Bearer "+secret[0])
 		}
 		resp, err := client.Do(req)
 		if err != nil {

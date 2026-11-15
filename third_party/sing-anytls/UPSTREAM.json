@@ -1,0 +1,29 @@
+{
+  "module": "github.com/anytls/sing-anytls",
+  "version": "v0.0.11",
+  "commit": "130d2e61b8895727bfed4942c535e91b246a9603",
+  "localPatch": "rwnode.1",
+  "upstreamFiles": {
+    "LICENSE": "df8e304aaa400c40a02bb48836a6172ee9ffb3666a5b28088d7201cf1a8b740e",
+    "README.md": "acd89205ecd7c888ba545258ffebcab6a9313f7ee7a37087b3766362772125d0",
+    "client.go": "982910de783d0f8864a2bf254cec9e75ddd35a7ebd806a4cb243c44896c5bfe4",
+    "go.mod": "166eb1c4595a895630b5d98098c0228ed0692d9a6b270cbc3dc12c28c4c5d79a",
+    "go.sum": "fb7aea31aa00849554c3cfbe55c4abfaff6549bda417585014e49798859e88c7",
+    "padding/padding.go": "d6c81ba227c992433de797771c4cd16ef73e4fcf40e857bc6880e0d534d27ca9",
+    "pipe/deadline.go": "052dc5dacf68e8453d74e4a59ddd5ba718f5e6edbced0aa3d98d954e57faf38f",
+    "pipe/io_pipe.go": "d50d3b9657d73aeb20889bf4b3ec3c1f8f0030faf2ac6c10bf4b076ecabd6904",
+    "service.go": "eab7bd2b780ece06bef1711e59f84d64f3d85a0f3de7db10186da0392ce47837",
+    "session/client.go": "6ece60c575b6b654ae29dada879f4d273dc4befa7b88ae07bdf204d1e8a9d740",
+    "session/frame.go": "a7bbe42c049f314c6c2fda7059b7301e5452962057826bdfccf1d5bef81a8fc8",
+    "session/session.go": "14e27f2cca6118a3025b1875ffe8963d2fe840f5554bd2ff4464dd0a5f162fb8",
+    "session/stream.go": "1f7ebfeb99ab5b0857d007dfedf664a667ef513aa3c95637ee58e86569a972d3",
+    "skiplist/contianer.go": "546786c68aaa0c58c3d40467fd338de0e48c44f4b8a54cb7bf2f67dac8ef49a8",
+    "skiplist/skiplist.go": "f08a755dde5510ffd9f12ec86f22d1db81d2c6efee18244af45a6b73a57238a9",
+    "skiplist/skiplist_newnode.go": "a2f2afd8de5b0c5278c4eab710aacf1b6affb78dc7cad8fd7df23caf42414510",
+    "skiplist/types.go": "cc344ed697230edc57ae3dd057e55008df06b02de9029a2dc8e3ddbbf8b0c898",
+    "util/deadline.go": "ebba69dca94d1c1ba416dc85a0a094f93316d5ee71440c358efef8de20ba2776",
+    "util/string_map.go": "53108e5086796e7efde38b849d20883dd577007fe749aeb59cae6e5e8714985c",
+    "util/type.go": "1f381a30a57a33b669e37507017c514ac03811063a1c9ca9272a38daa0550502",
+    "util/version.go": "a83c3845a762feb9f6e71622f5c20f97f331fb66341bcbb122acd58107941f19"
+  }
+}

@@ -32,7 +32,9 @@ func (i *Internal) getConfig(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, i.app.RawConfigJSON())
+	format, config := i.app.ConfigView()
+	w.Header().Set("X-Config-Format", string(format))
+	writeJSON(w, http.StatusOK, config)
 }
 
 func (i *Internal) webhook(w http.ResponseWriter, r *http.Request) {
