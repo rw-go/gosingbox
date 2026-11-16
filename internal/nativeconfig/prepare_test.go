@@ -167,6 +167,45 @@ func TestEmptyManagedSSAndNativeVlessFlow(t *testing.T) {
 		t.Fatal("accepted shared PSK SS")
 	}
 }
+
+func TestFixedPasswordSSIsAuxiliaryButCountedInNodeTraffic(t *testing.T) {
+	c := config(t)
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	ss := map[string]any{"type": "shadowsocks", "tag": "fixed", "method": "2022-blake3-aes-256-gcm", "password": key}
+	c["inbounds"] = append(c["inbounds"].([]any), ss)
+	p, err := prepare(t, c, management)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Users) != 1 {
+		t.Fatal("fixed relay became a panel-managed user set")
+	}
+	if _, ok := p.Users["fixed"]; ok {
+		t.Fatal("fixed relay can receive user mutations")
+	}
+	ib := p.Config["inbounds"].([]any)[1].(map[string]any)
+	if _, ok := ib["users"]; ok {
+		t.Fatal("single-password service became multi-user")
+	}
+	if ib["password"] != key {
+		t.Fatal("relay PSK changed")
+	}
+	stats := p.Config["experimental"].(map[string]any)["v2ray_api"].(map[string]any)["stats"].(map[string]any)
+	if !reflect.DeepEqual(stats["inbounds"], []string{"any", "fixed"}) {
+		t.Fatal("node relay traffic is not accounted")
+	}
+	if !reflect.DeepEqual(stats["users"], []string{"1"}) {
+		t.Fatal("relay was assigned personal usage")
+	}
+	ss["managed"] = true
+	if _, err = prepare(t, c, management); err == nil || !strings.Contains(err.Error(), "explicit users") {
+		t.Fatal("managed mode without users accepted")
+	}
+	ss["managed"] = "false"
+	if _, err = prepare(t, c, management); err == nil {
+		t.Fatal("invalid mode accepted")
+	}
+}
 func TestTLSCertificateFilesAreCheckedBeforeApply(t *testing.T) {
 	c := config(t)
 	options := first(c)["tls"].(map[string]any)

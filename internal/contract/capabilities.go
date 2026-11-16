@@ -44,6 +44,7 @@ type Capabilities struct {
 	ManagedProtocols       []string       `json:"managedProtocols"`
 	HotUserUpdateProtocols []string       `json:"hotUserUpdateProtocols"`
 	AnyTLSSharedListener   bool           `json:"anytlsSharedListener,omitempty"`
+	StaticShadowsocks2022  bool           `json:"staticShadowsocks2022,omitempty"`
 }
 
 // CurrentCapabilities advertises implemented controller paths, not everything
@@ -60,6 +61,7 @@ func CurrentCapabilities() Capabilities {
 	}
 	if NativeConfigAvailable {
 		caps.AnyTLSSharedListener = true
+		caps.StaticShadowsocks2022 = true
 		caps.AcceptedConfigFormats = append(caps.AcceptedConfigFormats, SingBoxConfig)
 		caps.ManagedProtocols = append(caps.ManagedProtocols, "anytls")
 		caps.HotUserUpdateProtocols = append(caps.HotUserUpdateProtocols, "anytls")

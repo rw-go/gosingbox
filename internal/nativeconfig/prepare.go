@@ -82,6 +82,11 @@ func Prepare(raw []byte, management Management) (*Prepared, error) {
 				return nil, fmt.Errorf("inbound %q: managed VLESS currently supports TCP without a transport wrapper", tag)
 			}
 		case "shadowsocks":
+			if value, present := inbound["managed"]; present {
+				if _, ok := value.(bool); !ok {
+					return nil, fmt.Errorf("inbound %q: managed must be a boolean", tag)
+				}
+			}
 			method, _ := inbound["method"].(string)
 			minimum := 32
 			switch method {
@@ -102,7 +107,12 @@ func Prepare(raw []byte, management Management) (*Prepared, error) {
 				return nil, fmt.Errorf("inbound %q: invalid Shadowsocks server key", tag)
 			}
 			if _, present := inbound["users"]; !present {
-				return nil, fmt.Errorf("inbound %q: managed Shadowsocks requires an explicit users array", tag)
+				if inbound["managed"] == true {
+					return nil, fmt.Errorf("inbound %q: managed Shadowsocks requires an explicit users array", tag)
+				}
+				// Native single-password relay: keep the PSK and do not enroll this
+				// listener in panel user updates. The core owns authentication here.
+				continue
 			}
 		case "direct":
 			listen, _ := inbound["listen"].(string)
@@ -185,8 +195,16 @@ func injectManagement(config map[string]any, users state.Snapshot, management Ma
 	v2ray["listen"] = management.StatsAddress
 	stats["enabled"] = true
 	stats["users"] = users.Names()
-	// Preserve explicit inbound/outbound counters; include node-managed inbounds.
+	// Include fixed-password relays in node traffic, but never in personal usage.
 	tags := users.Tags()
+	for _, value := range config["inbounds"].([]any) {
+		inbound := value.(map[string]any)
+		if inbound["type"] == "shadowsocks" {
+			if _, hasUsers := inbound["users"]; !hasUsers && inbound["managed"] != true {
+				tags = append(tags, inbound["tag"].(string))
+			}
+		}
+	}
 	if existing, present := stats["inbounds"]; present {
 		list, ok := existing.([]any)
 		if !ok {

@@ -44,10 +44,12 @@
 | --- | --- |
 | `anytls` | 普通 TLS；用户 `name` 为稳定 ID，`password` 为当前凭据；配套面板统一注入用户的 `vlessUuid`。拒绝 Reality。 |
 | `vless` | TCP，无额外 transport 包装；保留 TLS/Reality 参数及每个用户的 flow。空 flow 保持为空。 |
-| `shadowsocks` | SS2022 AES-128/256-GCM 多用户，必须显式提供 `users`；检查服务端与用户密钥。 |
+| `shadowsocks` | SS2022 AES-128/256-GCM；带 `users` 为托管多用户，省略 `users` 且未设 `managed: true` 为固定密码中转。检查服务端与用户密钥。 |
 | `direct` | 辅助入站，必须显式绑定回环 IP，无 users，不参与用户同步。 |
 
 必须至少有一个纳管入站，所有入站 tag 非空且唯一。其他入站以及非空 `endpoints`、`services` 当前明确拒绝，不能绕过用户管理边界。VLESS/AnyTLS 省略 users 等同空列表；SS2022 空列表自动标记为 fork 的 `managed: true`，避免退回共享 PSK 模式。有用户时移除此标记。
+
+固定密码 SS2022 自 3.4.1.21 起支持原生下发：仅使用入站 `password`，不参与面板用户增删和个人流量统计，仍计入节点入站流量。配套面板把它视作辅助入站，不提供权限组或订阅 Host 绑定；权限应加到单独的托管端口。`users: []` 始终是关闭用户访问的托管模式，撤销最后一个用户不会开放服务端密码。显式 `managed: true` 必须同时提供 `users`。旧 Xray 转译路径的行为不变。
 
 所有配置仍须通过锁定内嵌版本的实际 option schema 和实例启动校验。接受 VLESS/Reality 配置不等于已验收其所有客户端组合；真实流量覆盖普通 AnyTLS、空 flow 的 TCP VLESS 和 SS2022；后续部署联调另已验证实际订阅生成的原生 VLESS Reality Vision，以及既有 Xray Reality 转译路径。
 

@@ -15,7 +15,9 @@
     "runtimeCore": "singbox",
     "acceptedConfigFormats": ["xray", "singbox"],
     "managedProtocols": ["vless", "shadowsocks22", "anytls"],
-    "hotUserUpdateProtocols": ["vless", "shadowsocks22", "anytls"]
+    "hotUserUpdateProtocols": ["vless", "shadowsocks22", "anytls"],
+    "anytlsSharedListener": true,
+    "staticShadowsocks2022": true
   }
 }
 ```
@@ -25,6 +27,7 @@
 - 协议名称使用 Node handler 的 `type`：`shadowsocks22` 表示已有 SS2022 管理路径，不是 sing-box JSON 中的 `shadowsocks` 类型名。
 - 原生 `vless` 支持 TCP、保留 TLS/Reality 和用户 flow；Xray 转译路径仍遵循原有约束。能力列表不证明任意传输或客户端组合均受支持。
 - 热更新列表必须是纳管协议列表的子集；它不代表完整 Panel／订阅流程已通过端到端验收。
+- `staticShadowsocks2022` 从 3.4.1.21 起声明原生固定密码 SS2022 支持；面板在包含这类辅助入站的全量下发前必须验证它，旧节点缺失此标记时明确拒绝。它不表示托管空用户端口会回退为单密码。
 
 未包含上述任一管理 API 标签的构建仅声明 `["xray"]` 及 VLESS/SS2022，不声明 AnyTLS，拒绝原生启动。
 

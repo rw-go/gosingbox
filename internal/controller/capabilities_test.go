@@ -39,6 +39,9 @@ func TestCapabilitiesReportOnlyImplementedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	caps := response.Response
+	if caps.StaticShadowsocks2022 != contract.NativeConfigAvailable {
+		t.Fatal("fixed-password SS2022 capability does not match native support")
+	}
 	if rec.Code != http.StatusOK || caps.ContractVersion != 1 || caps.RuntimeCore != "singbox" {
 		t.Fatalf("unexpected capabilities: %s", rec.Body.String())
 	}
