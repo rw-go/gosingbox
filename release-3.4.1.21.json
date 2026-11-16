@@ -1,0 +1,44 @@
+{
+  "version": "3.4.1.21",
+  "sourceRevision": "143c2a1b57be950ebb623f0462d62972e07984fa",
+  "nodeVersion": "3.4.1",
+  "singboxVersion": "1.14.3",
+  "platform": "linux/amd64",
+  "imageId": "sha256:cb64fb668135a4513006f6ad5285e6f56f9c200a24d56311d39ed3354aa81a4d",
+  "imageSize": 23859131,
+  "package": "gosingbox-3.4.1.21-linux-amd64.tar.gz",
+  "packageSha256": "4d7d3b2070973dc6e0d6d5bec53e0ce6d3ac3ab94590218bbc8ec64b6bc93dd6",
+  "binaries": {
+    "gosingbox": "8da0665b59f97f56f6f0972153c9415c0e1927ff5f990011dee421e95077844f",
+    "geocheck": "f7994c73780d37d56a21f945431f7986c33360f8b50aaa98f0e2e3fa0a144316",
+    "gosingbox-entrypoint": "fa8a0ebd1fd17221d7d9175e74803a1e3f1cb2bbc3dff8d75436c54a4efa9b87"
+  },
+  "dockerRuntimeMatchesStandalonePackage": true,
+  "missingSecretRejected": true,
+  "docker": {
+    "reference": "3.4.1.21",
+    "digest": "sha256:cb64fb668135a4513006f6ad5285e6f56f9c200a24d56311d39ed3354aa81a4d",
+    "platformDigest": "sha256:3676de72c5b4dd6cb020ce7d7be3c380056f88257e935bbe4ba5778fff04b376",
+    "configDigest": "sha256:8cdae2fb080886102be4ff30d27a3285772aa8289969ecfea8e3480a645906ee",
+    "layers": [
+      "sha256:871d48e9bf6b789a439a4a19c1e152009924d818e60f7c51e498573223cd7cda",
+      "sha256:3e8888494edbbfaf8e60a71fae11c00776a882b4645ef541f84707170267a42a",
+      "sha256:26c9bf42cf418a9fc5babc9bb3d520e7d087770ca0127618d560d1ce686f2eed",
+      "sha256:09e2e4db44097a800396e52b9c218d503471a84051fbe3b6877dc32fcf9b4ba5",
+      "sha256:ac7a60c4f41d80abf51b5c001dbcdb6f9ef23d4199f8f2a33bde25b4fd608a38",
+      "sha256:12fb3145686af5a52cd7876dbdc24f4615ce3bb4508b3b79b8a7aff1e9ca6014"
+    ]
+  },
+  "validation": {
+    "passed": true,
+    "panel": "3.4.7-native.3",
+    "node": "3.4.1.21",
+    "realMtlSNativeDispatch": true,
+    "fixedDirectAndRelayTraffic": true,
+    "forceRestartRecovered": true,
+    "oldNodeRejectedBeforeStart": true,
+    "oldCoreKeptRunning": true,
+    "rollbackRehearsed": true,
+    "businessDataPreserved": true
+  }
+}
