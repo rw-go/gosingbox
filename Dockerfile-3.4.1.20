@@ -1,0 +1,36 @@
+FROM alpine:3.21
+
+ARG PACKAGE_VERSION=3.4.1.20
+ARG SOURCE_REVISION=unknown
+
+LABEL org.opencontainers.image.title="gosingbox" \
+      org.opencontainers.image.version="${PACKAGE_VERSION}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.description="Remnawave node with embedded sing-box data plane" \
+      org.opencontainers.image.url="https://bitbucket.org/rwnode/rwnode-gosingbox" \
+      org.opencontainers.image.source="https://bitbucket.org/rwnode/rwnode-gosingbox" \
+      org.opencontainers.image.vendor="rwnode" \
+      org.opencontainers.image.licenses="AGPL-3.0"
+
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
+    apk add --update-cache ca-certificates nftables
+
+COPY gosingbox /usr/local/bin/gosingbox
+COPY geocheck /usr/local/bin/geocheck
+COPY gosingbox-entrypoint /usr/local/bin/gosingbox-entrypoint
+
+RUN chmod 0755 /usr/local/bin/gosingbox-entrypoint \
+    && mkdir -p /var/lib/gosingbox/singbox/geo
+
+ENV NODE_ENV=production \
+    NODE_PORT=2222 \
+    SINGBOX_STATS_ADDRESS=127.0.0.1:6450 \
+    SINGBOX_CLASH_ADDRESS=127.0.0.1:9090 \
+    SINGBOX_LOG_LEVEL=warn \
+    SINGBOX_DEBOUNCE_MS=5000 \
+    SINGBOX_GEO_DIR=/var/lib/gosingbox/singbox/geo \
+    LOG_LEVEL=info
+
+VOLUME ["/var/lib/gosingbox"]
+
+ENTRYPOINT ["/usr/local/bin/gosingbox-entrypoint"]
