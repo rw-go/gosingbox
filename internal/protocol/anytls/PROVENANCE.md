@@ -10,5 +10,19 @@ Local changes:
 - Implement the existing fork's `adapter.UpdatableInbound[option.AnyTLSUser]` interface.
 - Delegate updates to the locally patched `sing-anytls` service, which handles concurrent authentication and revokes old sessions.
 - Register service shutdown with the sing-box lifecycle scope so active, idle and pending plaintext sessions close with the inbound.
+- Add the opt-in `shared_listener` node extension. Each engine configuration owns
+  its listener groups; matching listen options and distinct `tls.server_name`
+  values share one TCP listener. A bounded ClientHello parser selects the member
+  and replays the original bytes into its unchanged TLS/authentication path.
+  Each member retains independent users, hot updates and route metadata, and the
+  real source address is preserved without a local TCP forwarding hop. Unknown
+  or missing SNI is rejected. The group starts only after every member is ready,
+  and shutdown also closes pre-authentication connections.
+
+`shared_listener` is a gosingbox extension, not an upstream sing-box option. The
+existing Panel native JSON path preserves it without a Panel image upgrade.
+The public SNI must be visible in the outer ClientHello; ECH routing is not
+supported by this extension. Other protocols and ordinary AnyTLS inbounds do not
+participate unless explicitly configured.
 
 The node's public native configuration entry point now uses this adapter when compiled with both management APIs. Isolated tests cover the public handler, TLS/AnyTLS traffic, hot updates, management authentication and rollback. Panel business integration remains a separate stage. The local AnyTLS service patch and its provenance are documented in `third_party/sing-anytls/RWNODE_PATCH.md`.

@@ -7,7 +7,7 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 > 原生模式支持 **AnyTLS（普通 TLS）**、**TCP VLESS（保留 TLS/Reality 和 flow）**、
 > **SS2022 AES-128/256-GCM 多用户**；Xray 输入继续沿用原有转译行为。
 
-当前发布版本 **3.4.1.19**，内嵌 sing-box **1.14.3**，Panel 上报 `nodeVersion=3.4.1`。
+当前发布版本 **3.4.1.20**，内嵌 sing-box **1.14.3**，Panel 上报 `nodeVersion=3.4.1`。
 原生集成包含 [节点能力扩展 v1](docs/node-capabilities.md)、
 [按入站管理用户及 AnyTLS 生命周期](docs/user-lifecycle.md) 和
 [原生配置入口](docs/native-config.md)。已与配套修改版 Panel 完成原生 Profile、权限、
@@ -15,14 +15,16 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 原生配置需要支持该扩展的 Panel；仅升级节点不会给官方 Panel 增加配置编辑能力。
 
 本次发布渠道为 **Docker Hub 与 Bitbucket**，GitHub 尚未同步。请使用下方 Bitbucket
-安装入口或 `rwnode/gosingbox:3.4.1.19`。版本命名说明与兼容边界见
-[3.4.1.19 发布说明](docs/releases/3.4.1.19.md)。
+安装入口或 `rwnode/gosingbox:3.4.1.20`。本版新增 AnyTLS 按 SNI 共用 TCP 443，
+配置与兼容边界见 [3.4.1.20 发布说明](docs/releases/3.4.1.20.md)。
 
 ## 特性
 
 - **单静态二进制**（sing-box 内嵌，无 Node / glibc / 子进程依赖），Alpine 3.21 + 128MB LXC 可跑。
 - **无感热插拔用户**：VLESS/AnyTLS 走 `UpdateUsers()`、SS2022 走 `UpdateUsersByOptions()`，
   增删不重启监听器、不中断其他连接；且热插拔用户实时同步进入统计白名单。
+- **AnyTLS 共用端口**：原生入站通过 `shared_listener` 按客户端 SNI 共用一个 TCP 监听端口，
+  各入站独立认证、授权和路由，保留真实源 IP，无需 Nginx。
 - **Xray 转译模式的协议与域名嗅探（Sniffing 对齐）**：当入站开启 `sniffing` 或规则包含域名匹配时，自动注入 sing-box 1.14 `action: sniff` 动作，解决客户端预解析 IP 导致域名分流规则漏匹配的问题。
 - 统计走 v2ray_api gRPC；在线用户/单用户 IP/最后活动时间走 clash_api `/connections`（`userId` = 用户 email）。
 - **断连（connection-drop）**：`drop-ips` / `drop-users-connections` 走 clash_api
@@ -61,7 +63,7 @@ Alpine 用 OpenRC，Debian/Ubuntu/Arch 等用 systemd。
 ## Docker 安装（推荐用于通用 Linux）
 
 Docker 版使用单进程 Alpine 镜像（内嵌 sing-box，不包含 Node.js、Xray 或 s6），默认镜像：
-`rwnode/gosingbox:latest`。生产部署可固定为 `rwnode/gosingbox:3.4.1.19`。
+`rwnode/gosingbox:latest`。生产部署可固定为 `rwnode/gosingbox:3.4.1.20`。
 
 一键安装（从 Bitbucket）：
 

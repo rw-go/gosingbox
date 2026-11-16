@@ -1,3 +1,4 @@
 # Build artifacts
 /dist-go/
+/.lab/
 *.bak-*

@@ -26,19 +26,38 @@ import (
 )
 
 func RegisterInbound(registry *inbound.Registry) {
-	inbound.Register[option.AnyTLSInboundOptions](registry, C.TypeAnyTLS, NewInbound)
+	// Each engine configuration gets its own registry and listener groups.
+	// Nothing is shared with another engine or a rollback configuration.
+	groups := &listenerGroups{groups: make(map[string]*sharedListener)}
+	inbound.Register[Options](registry, C.TypeAnyTLS, func(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options Options) (adapter.Inbound, error) {
+		return newInbound(ctx, router, logger, tag, options, groups)
+	})
+}
+
+// Options adds an opt-in node extension. Members of a shared_listener use the
+// same listen options and distinct tls.server_name values. Each member retains
+// its own users, tag, certificate and AnyTLS service.
+type Options struct {
+	option.AnyTLSInboundOptions
+	SharedListener string `json:"shared_listener,omitempty"`
 }
 
 type Inbound struct {
 	inbound.Adapter
-	tlsConfig tls.ServerConfig
-	router    adapter.ConnectionRouterEx
-	logger    logger.ContextLogger
-	listener  *listener.Listener
-	service   *anytls.Service
+	tlsConfig     tls.ServerConfig
+	router        adapter.ConnectionRouterEx
+	logger        logger.ContextLogger
+	listener      *listener.Listener
+	service       *anytls.Service
+	shared        *sharedListener
+	listenOptions option.ListenOptions
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.AnyTLSInboundOptions) (adapter.Inbound, error) {
+	return newInbound(ctx, router, logger, tag, Options{AnyTLSInboundOptions: options}, nil)
+}
+
+func newInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options Options, groups *listenerGroups) (adapter.Inbound, error) {
 	if options.TLS == nil || !options.TLS.Enabled {
 		return nil, E.New("managed AnyTLS requires TLS")
 	}
@@ -46,9 +65,10 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		return nil, E.New("managed AnyTLS requires ordinary TLS; Reality is not supported")
 	}
 	inbound := &Inbound{
-		Adapter: inbound.NewAdapter(C.TypeAnyTLS, tag),
-		router:  uot.NewRouter(router, logger),
-		logger:  logger,
+		Adapter:       inbound.NewAdapter(C.TypeAnyTLS, tag),
+		router:        uot.NewRouter(router, logger),
+		logger:        logger,
+		listenOptions: options.ListenOptions,
 	}
 
 	if options.TLS != nil && options.TLS.Enabled {
@@ -76,13 +96,23 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		return nil, err
 	}
 	inbound.service = service
-	inbound.listener = listener.New(listener.Options{
+	listenOptions := listener.Options{
 		Context:           ctx,
 		Logger:            logger,
 		Network:           []string{N.NetworkTCP},
 		Listen:            options.ListenOptions,
 		ConnectionHandler: inbound,
-	})
+	}
+	if options.SharedListener != "" {
+		shared, err := groups.join(options.SharedListener, options.TLS.ServerName, inbound, listenOptions)
+		if err != nil {
+			_ = service.Close()
+			return nil, err
+		}
+		inbound.shared = shared
+	} else {
+		inbound.listener = listener.New(listenOptions)
+	}
 	return inbound, nil
 }
 
@@ -97,11 +127,15 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		}
 		scope.Add(h.tlsConfig.Close)
 	}
+	scope.Add(h.service.Close)
+	if h.shared != nil {
+		scope.Add(h.shared.Close)
+		return h.shared.startMember()
+	}
 	err := h.listener.Start()
 	if err != nil {
 		return err
 	}
-	scope.Add(h.service.Close)
 	scope.Add(h.listener.Close)
 	return nil
 }
@@ -130,7 +164,7 @@ func (h *inboundHandler) NewConnectionEx(ctx context.Context, conn net.Conn, sou
 	metadata.Inbound = h.Tag()
 	metadata.InboundType = h.Type()
 	//nolint:staticcheck
-	metadata.InboundDetour = h.listener.ListenOptions().Detour
+	metadata.InboundDetour = h.listenOptions.Detour
 	//nolint:staticcheck
 	metadata.Source = source
 	metadata.Destination = destination.Unwrap()
