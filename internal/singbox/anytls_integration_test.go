@@ -107,7 +107,7 @@ func TestAnyTLSHotUpdateStatisticsAndOnlineIdentity(t *testing.T) {
 	if err != nil || len(current["any-in"].Users) != 0 {
 		t.Fatal("stale rollback credentials")
 	}
-	if _, _, err = e.parseOptions(e.currentConfig); err != nil {
+	if _, _, err = e.parseOptions(e.currentConfig, e.currentFormat); err != nil {
 		t.Fatal(err)
 	}
 }

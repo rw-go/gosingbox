@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/rwnode/rwnode-gosingbox/internal/contract"
 	managedanytls "github.com/rwnode/rwnode-gosingbox/internal/protocol/anytls"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
@@ -38,6 +39,7 @@ type Engine struct {
 	cancel        context.CancelFunc
 	box           *box.Box
 	online        bool
+	currentFormat contract.ConfigFormat
 	currentConfig map[string]any // last successfully applied config (for rollback)
 }
 
@@ -113,7 +115,7 @@ func (e *Engine) Status() Status {
 
 // parseOptions marshals a config map into sing-box options without touching the
 // running instance.
-func (e *Engine) parseOptions(config map[string]any) (context.Context, option.Options, error) {
+func (e *Engine) parseOptions(config map[string]any, format contract.ConfigFormat) (context.Context, option.Options, error) {
 	data, err := json.Marshal(config)
 	if err != nil {
 		return nil, option.Options{}, fmt.Errorf("marshal config: %w", err)
@@ -123,6 +125,11 @@ func (e *Engine) parseOptions(config map[string]any) (context.Context, option.Op
 	opts, err := singJSON.UnmarshalExtendedContext[option.Options](ctx, data)
 	if err != nil {
 		return nil, option.Options{}, fmt.Errorf("parse sing-box options: %w", err)
+	}
+	if format == contract.SingBoxConfig {
+		if err := e.protectDirectOutbounds(ctx, &opts); err != nil {
+			return nil, option.Options{}, err
+		}
 	}
 	return ctx, opts, nil
 }
@@ -156,7 +163,11 @@ func (e *Engine) startLocked(ctx context.Context, opts option.Options) error {
 // create/start failure the previous instance is restored best-effort. If that
 // also fails the error explicitly reports that the core is offline.
 func (e *Engine) ApplyConfig(config map[string]any) error {
-	ctx, opts, err := e.parseOptions(config)
+	return e.ApplyConfigForFormat(config, contract.XrayConfig)
+}
+
+func (e *Engine) ApplyConfigForFormat(config map[string]any, format contract.ConfigFormat) error {
+	ctx, opts, err := e.parseOptions(config, format)
 	if err != nil {
 		return err
 	}
@@ -173,7 +184,7 @@ func (e *Engine) ApplyConfig(config map[string]any) error {
 
 	if err := e.startLocked(ctx, opts); err != nil {
 		if prev != nil {
-			if rctx, ropts, rerr := e.parseOptions(prev); rerr == nil {
+			if rctx, ropts, rerr := e.parseOptions(prev, e.currentFormat); rerr == nil {
 				if serr := e.startLocked(rctx, ropts); serr != nil {
 					e.logger.Warn("rollback to previous config failed", "error", serr)
 					e.currentConfig = nil
@@ -193,6 +204,7 @@ func (e *Engine) ApplyConfig(config map[string]any) error {
 	}
 
 	e.currentConfig = config
+	e.currentFormat = format
 	return nil
 }
 

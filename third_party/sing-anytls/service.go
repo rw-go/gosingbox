@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/anytls/sing-anytls/padding"
 	"github.com/anytls/sing-anytls/session"
@@ -20,6 +21,23 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
+
+// Bound pending authentication across all listeners, including shared SNI groups.
+const maxPendingHandshakes = 128
+const authenticationTimeout = 10 * time.Second
+
+var handshakeSlots = make(chan struct{}, maxPendingHandshakes)
+
+// BeginHandshake reserves a slot before transport negotiation. The returned
+// release function is idempotent across early errors and successful admission.
+func BeginHandshake() (func(), error) {
+	select {
+	case handshakeSlots <- struct{}{}:
+		return sync.OnceFunc(func() { <-handshakeSlots }), nil
+	default:
+		return nil, errors.New("AnyTLS pending handshake limit reached")
+	}
+}
 
 type Service struct {
 	mu              sync.RWMutex
@@ -119,6 +137,19 @@ func (s *Service) Close() error {
 
 // NewConnection `conn` should be plaintext
 func (s *Service) NewConnection(ctx context.Context, conn net.Conn, source M.Socksaddr, onClose N.CloseHandlerFunc) error {
+	release, err := BeginHandshake()
+	if err != nil {
+		return err
+	}
+	return s.AuthenticateConnection(ctx, conn, source, onClose, release)
+}
+
+// AuthenticateConnection accepts a slot reserved before the transport handshake.
+func (s *Service) AuthenticateConnection(ctx context.Context, conn net.Conn, source M.Socksaddr, onClose N.CloseHandlerFunc, release func()) error {
+	if release == nil {
+		return os.ErrInvalid
+	}
+	defer release()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -131,8 +162,15 @@ func (s *Service) NewConnection(ctx context.Context, conn net.Conn, source M.Soc
 	b := buf.NewPacket()
 	defer b.Release()
 
+	if err := conn.SetReadDeadline(time.Now().Add(authenticationTimeout)); err != nil {
+		return err
+	}
 	n, err := b.ReadOnceFrom(conn)
 	if err != nil {
+		return err
+	}
+	// All authentication fields are parsed from this already bounded buffer.
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
 		return err
 	}
 	conn = bufio.NewCachedConn(conn, b)
@@ -186,11 +224,12 @@ func (s *Service) NewConnection(ctx context.Context, conn net.Conn, source M.Soc
 	}, &s.padding, s.logger)
 	// Recheck the immutable account generation after parsing. A removal/re-add
 	// between authentication and registration cannot resurrect the old session.
-	if !s.registerSession(session, account) {
+	if !s.registerSession(session, account, original) {
 		_ = session.Close()
 		return E.New("user revoked during handshake")
 	}
 
+	release()
 	defer func() { s.mu.Lock(); delete(s.sessions, session); s.mu.Unlock() }()
 	session.Run()
 	session.Close()
@@ -205,12 +244,13 @@ func (s *Service) fallback(ctx context.Context, conn net.Conn, source M.Socksadd
 	return nil
 }
 
-func (s *Service) registerSession(sess *session.Session, a *account) bool {
+func (s *Service) registerSession(sess *session.Session, a *account, conn net.Conn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.users[a.hash] != a {
 		return false
 	}
+	delete(s.pending, conn)
 	s.sessions[sess] = a
 	return true
 }

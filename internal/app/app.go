@@ -160,7 +160,7 @@ func (a *App) StartConfig(raw []byte, format contract.ConfigFormat, force bool) 
 		a.queueRevocations(current, users)
 	} else {
 		a.runPreCleanup()
-		if err = a.proc.ApplyConfig(prepared); err != nil {
+		if err = a.proc.ApplyConfigForFormat(prepared, format); err != nil {
 			return err
 		}
 		clear(a.pendingRevocations)

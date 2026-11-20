@@ -1,6 +1,6 @@
 # Local AnyTLS lifecycle patch
 
-Baseline: `github.com/anytls/sing-anytls v0.0.11`, commit `130d2e61b8895727bfed4942c535e91b246a9603`. Local patch identifier: `rwnode.1`. The original license is retained in `LICENSE`; `UPSTREAM.json` records hashes of every original module file. This directory is a source replacement in the root `go.mod`, not a separately published version.
+Baseline: `github.com/anytls/sing-anytls v0.0.11`, commit `130d2e61b8895727bfed4942c535e91b246a9603`. Local patch identifier: `rwnode.2`. The original license is retained in `LICENSE`; `UPSTREAM.json` records hashes of every original module file. This directory is a source replacement in the root `go.mod`, not a separately published version.
 
 The root module continues to use the locked sing-box fork and selected sing version. The copied `go.mod` retains the upstream requirements; run tests from the **root module** to exercise the actual selected dependency graph:
 
@@ -10,7 +10,7 @@ go test -race github.com/anytls/sing-anytls/...
 
 Changes are limited to:
 
-- `service.go`: synchronize authentication reads and updates; retain immutable account generations across identical updates; track and synchronously close authenticated sessions after deletion, identity change or password rotation. Register sessions under the same lock after checking the account generation again, rejecting late handshakes after removal/re-add. Recheck authorization before routing new streams; close pending unauthenticated connections and sessions on shutdown.
+- `service.go`: synchronize authentication reads and updates; retain immutable account generations across identical updates; track and synchronously close authenticated sessions after deletion, identity change or password rotation. Register sessions under the same lock after checking the account generation again, rejecting late handshakes after removal/re-add. Recheck authorization before routing new streams; close pending unauthenticated connections and sessions on shutdown. All listeners share a 128-slot admission limit from acceptance until authentication, and the first AnyTLS record has a 10-second read deadline. Successful authentication releases the slot before the session runs.
 - `session/session.go`: prevent adding a stream after session closure; synchronize peer-version and buffered-write state used concurrently during connection shutdown and session reuse.
 - `session/stream.go`: synchronize stream error state and close-hook attachment with peer-driven closure.
 - `session/client.go`: attach the pool hook using the synchronized stream API. The existing unsynchronized attachment was reproduced by the revocation race tests.

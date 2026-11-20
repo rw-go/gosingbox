@@ -87,7 +87,10 @@ func (h *nativeHarness) start(cfg map[string]any, format string, force bool, wan
 }
 func (h *nativeHarness) rotate(password string) {
 	h.t.Helper()
-	rec := h.call("POST", "/node/handler/add-user", map[string]any{"hashData": map[string]any{"vlessUuid": password}, "data": []any{map[string]any{"type": "anytls", "tag": "any", "username": "1", "password": password}}})
+	rec := h.call("POST", "/node/handler/add-users", map[string]any{"users": []any{map[string]any{
+		"userData":    map[string]any{"userId": "1", "vlessUuid": password},
+		"inboundData": []any{map[string]any{"type": "anytls", "tag": "any"}},
+	}}})
 	var result struct{ Response struct{ Success bool } }
 	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || !result.Response.Success {
 		h.t.Fatalf("rotate: %s", rec.Body.String())
@@ -303,10 +306,20 @@ func TestNativeVLESSAndEmptySSWithLegacyFormatSwitch(t *testing.T) {
 	cfg := cloneConfig(t, h.config)
 	cfg["inbounds"] = []any{map[string]any{"type": "vless", "tag": "vl", "listen": "127.0.0.1", "listen_port": h.port, "users": []any{map[string]any{"name": "1", "uuid": testutil.UUID1, "flow": ""}}}, map[string]any{"type": "shadowsocks", "tag": "ss", "listen": "127.0.0.1", "listen_port": ssPort, "method": "2022-blake3-aes-128-gcm", "password": key, "users": []any{}}}
 	h.start(cfg, "singbox", false, "")
-	if err := h.app.UpdateUsers([]state.Update{{ID: "1", Memberships: []state.Membership{{Tag: "vl", Protocol: "vless", User: state.User{ID: "1", Credential: testutil.UUID1}}, {Tag: "ss", Protocol: "shadowsocks22", User: state.User{ID: "1", Credential: password}}}}}); err != nil {
-		t.Fatal(err)
+	// Native reconciliation omits unrelated protocol credentials, even when
+	// users of different protocols share a batch.
+	rec := h.call("POST", "/node/handler/add-users", map[string]any{"users": []any{
+		map[string]any{"userData": map[string]any{"userId": "1", "vlessUuid": testutil.UUID1}, "inboundData": []any{map[string]any{"type": "vless", "tag": "vl", "flow": ""}}},
+		map[string]any{"userData": map[string]any{"userId": "2", "ssPassword": "abcdefghijklmnop"}, "inboundData": []any{map[string]any{"type": "shadowsocks22", "tag": "ss"}}},
+	}})
+	var applied struct{ Response struct{ Success bool } }
+	if err := json.Unmarshal(rec.Body.Bytes(), &applied); err != nil || !applied.Response.Success {
+		t.Fatal("node rejected scoped credentials", err)
 	}
 	snapshot, _ := h.state.Snapshot()
+	if user := snapshot["ss"].Users["2"]; user.Credential != password || user.HashUUID != "" {
+		t.Fatal("SS-only user must authenticate without a UUID alias")
+	}
 	if snapshot["vl"].Users["1"].Flow != "" {
 		t.Fatal("native empty flow forced to Vision")
 	}

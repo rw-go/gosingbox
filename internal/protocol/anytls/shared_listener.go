@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	anytls "github.com/anytls/sing-anytls"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/sniff"
@@ -120,6 +121,12 @@ func (g *sharedListener) Close() error {
 }
 
 func (g *sharedListener) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
+	release, err := anytls.BeginHandshake()
+	if err != nil {
+		N.CloseOnHandshakeFailure(conn, onClose, err)
+		return
+	}
+	defer release()
 	g.mu.Lock()
 	if g.closed {
 		g.mu.Unlock()
@@ -139,7 +146,7 @@ func (g *sharedListener) NewConnection(ctx context.Context, conn net.Conn, metad
 	// Reuse sing-box's TLS parser; it handles ClientHello fragmentation. Bound
 	// both bytes and time, and replay every consumed byte to the selected TLS
 	// server. This never dials a loopback proxy or replaces the real source IP.
-	err := sniff.TLSClientHello(ctx, &hello, io.TeeReader(io.LimitReader(conn, maxClientHelloBytes), &captured))
+	err = sniff.TLSClientHello(ctx, &hello, io.TeeReader(io.LimitReader(conn, maxClientHelloBytes), &captured))
 	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		N.CloseOnHandshakeFailure(conn, onClose, fmt.Errorf("invalid shared AnyTLS ClientHello"))
@@ -155,5 +162,5 @@ func (g *sharedListener) NewConnection(ctx context.Context, conn net.Conn, metad
 	metadata.InboundType = C.TypeAnyTLS
 	// Keep the outer SNI out of metadata.Domain: later domain-based routing
 	// must still inspect the user's destination, not the selected entry name.
-	target.NewConnection(ctx, bufio.NewCachedConn(conn, buf.As(captured.Bytes())), metadata, onClose)
+	target.acceptConnection(ctx, bufio.NewCachedConn(conn, buf.As(captured.Bytes())), metadata, onClose, release)
 }

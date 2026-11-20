@@ -9,6 +9,7 @@ import (
 	"reflect"
 
 	"github.com/gofrs/uuid/v5"
+	"github.com/rwnode/rwnode-gosingbox/internal/contract"
 	"github.com/rwnode/rwnode-gosingbox/internal/state"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
@@ -197,7 +198,7 @@ func configBase(config map[string]any) []byte {
 // ValidateConfig checks the actual embedded option schema and all managed user
 // credentials before a native full push is allowed to replace a running core.
 func (e *Engine) ValidateConfig(config map[string]any) error {
-	if _, _, err := e.parseOptions(config); err != nil {
+	if _, _, err := e.parseOptions(config, contract.SingBoxConfig); err != nil {
 		return err
 	}
 	users, err := state.FromConfig(config)

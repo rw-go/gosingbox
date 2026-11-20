@@ -161,11 +161,11 @@ func TestLateRegistrationRejectsRemovedGeneration(t *testing.T) {
 	old := s.users[hash]
 	s.UpdateUsers(nil)
 	s.UpdateUsers([]User{{Name: "1001", Password: probePassword}})
-	if s.registerSession(nil, old) {
+	if s.registerSession(nil, old, nil) {
 		t.Fatal("stale handshake resurrected after remove/re-add")
 	}
 	s.Close()
-	if s.registerSession(nil, s.users[hash]) {
+	if s.registerSession(nil, s.users[hash], nil) {
 		t.Fatal("late session registered after shutdown")
 	}
 }
@@ -195,3 +195,69 @@ type readSignalConn struct {
 }
 
 func (c *readSignalConn) Read(p []byte) (int, error) { close(c.started); return c.Conn.Read(p) }
+
+func TestAuthenticationAdmission(t *testing.T) {
+	var pending []func()
+	defer func() {
+		for _, h := range pending {
+			h()
+		}
+	}()
+	for range maxPendingHandshakes {
+		h, err := BeginHandshake()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pending = append(pending, h)
+	}
+	if h, err := BeginHandshake(); err == nil {
+		h()
+		t.Fatal("handshake admitted above the limit")
+	}
+	pending[0]()
+	pending[0]()
+	h, err := BeginHandshake()
+	if err != nil {
+		t.Fatal("failed to reclaim exactly one slot", err)
+	}
+	h()
+}
+
+// Observe deadline installation and clearing without waiting on a real timer.
+type authDeadlineConn struct {
+	net.Conn
+	deadlines []time.Time
+}
+
+func (c *authDeadlineConn) SetReadDeadline(d time.Time) error {
+	c.deadlines = append(c.deadlines, d)
+	return c.Conn.SetReadDeadline(d)
+}
+
+func TestAuthenticationReadDeadline(t *testing.T) {
+	s, _ := newService(t)
+	client, server := net.Pipe()
+	defer server.Close()
+	c := &authDeadlineConn{Conn: server}
+	go func() {
+		_, _ = client.Write([]byte{0})
+		client.Close()
+	}()
+	start := time.Now()
+	_ = s.NewConnection(context.Background(), c, M.Socksaddr{}, nil)
+	if len(c.deadlines) != 2 || c.deadlines[0].Before(start.Add(authenticationTimeout)) || !c.deadlines[1].IsZero() {
+		t.Fatal("authentication read did not set then clear its own deadline")
+	}
+}
+
+func TestActiveSessionReleasesAdmission(t *testing.T) {
+	s, _ := newService(t)
+	var dials atomic.Int32
+	client := newClient(t, s, probePassword, &dials)
+	if err := roundTrip(client); err != nil {
+		t.Fatal(err)
+	}
+	if len(handshakeSlots) != 0 {
+		t.Fatal("authenticated session is still using a pending slot")
+	}
+}

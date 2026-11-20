@@ -2,7 +2,7 @@
   "module": "github.com/anytls/sing-anytls",
   "version": "v0.0.11",
   "commit": "130d2e61b8895727bfed4942c535e91b246a9603",
-  "localPatch": "rwnode.1",
+  "localPatch": "rwnode.2",
   "upstreamFiles": {
     "LICENSE": "df8e304aaa400c40a02bb48836a6172ee9ffb3666a5b28088d7201cf1a8b740e",
     "README.md": "acd89205ecd7c888ba545258ffebcab6a9313f7ee7a37087b3766362772125d0",
