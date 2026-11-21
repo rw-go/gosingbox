@@ -54,7 +54,7 @@ type guardedDirect struct {
 }
 
 func (d *guardedDirect) protects(network string, port uint16) bool {
-	return N.NetworkName(network) == N.NetworkTCP && (port == d.ports[0] || port == d.ports[1])
+	return port != 0 && N.NetworkName(network) == N.NetworkTCP && (port == d.ports[0] || port == d.ports[1])
 }
 
 func checkManagementAddresses(destination M.Socksaddr, addresses []netip.Addr) error {

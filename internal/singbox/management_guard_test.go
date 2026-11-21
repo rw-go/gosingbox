@@ -49,7 +49,22 @@ func TestManagementGuardOnNativeDirectOutbounds(t *testing.T) {
 			t.Fatal("mixed DNS answers were not rejected before parallel dial")
 		}
 		if explicit {
-			// A failed switch to the legacy format must restore the native registry.
+			// Legacy format also protects local management listeners on direct outbounds.
+			legacyCfg := map[string]any{"log": map[string]any{"disabled": true}, "outbounds": []any{map[string]any{"type": "direct", "tag": "direct"}}}
+			if err := e.ApplyConfigForFormat(legacyCfg, contract.XrayConfig); err != nil {
+				t.Fatalf("expected legacy format to apply, got %v", err)
+			}
+			legacyGuard, ok := service.FromContext[adapter.OutboundManager](e.ctx).Default().(*guardedDirect)
+			if !ok {
+				t.Fatal("legacy format did not install direct management guard")
+			}
+			if _, err := legacyGuard.DialContext(context.Background(), "tcp", M.ParseSocksaddr("127.0.0.2:6458")); err == nil || !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("legacy format allowed dialing management port: %v", err)
+			}
+			// Restore native format and verify failed rollback still preserves protection.
+			if err := e.ApplyConfigForFormat(cfg, contract.SingBoxConfig); err != nil {
+				t.Fatal(err)
+			}
 			invalid := map[string]any{"log": map[string]any{"disabled": true}, "route": map[string]any{"final": "missing"}}
 			if err := e.ApplyConfigForFormat(invalid, contract.XrayConfig); err == nil || !strings.Contains(err.Error(), "rolled back") {
 				t.Fatalf("expected rollback during format switch, got %v", err)

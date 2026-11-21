@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"sync"
@@ -25,6 +26,11 @@ import (
 // Bound pending authentication across all listeners, including shared SNI groups.
 const maxPendingHandshakes = 128
 const authenticationTimeout = 10 * time.Second
+
+var (
+	streamDestinationTimeout = 10 * time.Second
+	maxSessionStreams        = session.MaxStreamsPerSession
+)
 
 var handshakeSlots = make(chan struct{}, maxPendingHandshakes)
 
@@ -159,56 +165,72 @@ func (s *Service) AuthenticateConnection(ctx context.Context, conn net.Conn, sou
 	s.pending[original] = struct{}{}
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); delete(s.pending, original); s.mu.Unlock() }()
-	b := buf.NewPacket()
-	defer b.Release()
-
 	if err := conn.SetReadDeadline(time.Now().Add(authenticationTimeout)); err != nil {
 		return err
 	}
-	n, err := b.ReadOnceFrom(conn)
-	if err != nil {
-		return err
-	}
-	// All authentication fields are parsed from this already bounded buffer.
-	if err := conn.SetReadDeadline(time.Time{}); err != nil {
-		return err
-	}
-	conn = bufio.NewCachedConn(conn, b)
+	clearAuthDeadline := sync.OnceValue(func() error {
+		return original.SetReadDeadline(time.Time{})
+	})
+	defer func() { _ = clearAuthDeadline() }()
 
-	by, err := b.ReadBytes(32)
+	var header [34]byte
+	nHash, err := io.ReadFull(conn, header[:32])
 	if err != nil {
-		b.Resize(0, n)
-		return s.fallback(ctx, conn, source, err, onClose)
+		_ = clearAuthDeadline()
+		return s.fallbackWithPrefix(ctx, conn, header[:nHash], source, err, onClose)
 	}
 	var passwordSha256 [32]byte
-	copy(passwordSha256[:], by)
+	copy(passwordSha256[:], header[:32])
 	s.mu.RLock()
 	account := s.users[passwordSha256]
 	s.mu.RUnlock()
 	if account == nil {
-		b.Resize(0, n)
-		return s.fallback(ctx, conn, source, E.New("unknown user password"), onClose)
+		_ = clearAuthDeadline()
+		return s.fallbackWithPrefix(ctx, conn, header[:32], source, E.New("unknown user password"), onClose)
 	}
 	ctx = auth.ContextWithUser(ctx, account.name)
 
-	by, err = b.ReadBytes(2)
+	nLen, err := io.ReadFull(conn, header[32:34])
 	if err != nil {
-		b.Resize(0, n)
-		return s.fallback(ctx, conn, source, E.Extend(err, "read padding length"), onClose)
+		_ = clearAuthDeadline()
+		return s.fallbackWithPrefix(ctx, conn, header[:32+nLen], source, E.Extend(err, "read padding length"), onClose)
 	}
-	paddingLen := binary.BigEndian.Uint16(by)
+	paddingLen := int(binary.BigEndian.Uint16(header[32:34]))
 	if paddingLen > 0 {
-		_, err = b.ReadBytes(int(paddingLen))
-		if err != nil {
-			b.Resize(0, n)
-			return s.fallback(ctx, conn, source, E.Extend(err, "read padding"), onClose)
+		if s.fallbackHandler == nil {
+			if _, err = io.CopyN(io.Discard, conn, int64(paddingLen)); err != nil {
+				_ = clearAuthDeadline()
+				return s.fallback(ctx, conn, source, E.Extend(err, "read padding"), onClose)
+			}
+		} else {
+			paddingBytes := make([]byte, paddingLen)
+			nPad, readErr := io.ReadFull(conn, paddingBytes)
+			if readErr != nil {
+				_ = clearAuthDeadline()
+				prefix := make([]byte, 34+nPad)
+				copy(prefix, header[:])
+				copy(prefix[34:], paddingBytes[:nPad])
+				return s.fallbackWithPrefix(ctx, conn, prefix, source, E.Extend(readErr, "read padding"), onClose)
+			}
 		}
+	}
+	if err := clearAuthDeadline(); err != nil {
+		return err
 	}
 
 	session := session.NewServerSession(conn, func(stream *session.Stream) {
+		if err := stream.SetReadDeadline(time.Now().Add(streamDestinationTimeout)); err != nil {
+			_ = stream.HandshakeFailure(err)
+			_ = stream.Close()
+			return
+		}
 		destination, err := M.SocksaddrSerializer.ReadAddrPort(stream)
+		if err == nil {
+			err = stream.SetReadDeadline(time.Time{})
+		}
 		if err != nil {
 			s.logger.ErrorContext(ctx, "ReadAddrPort:", err)
+			_ = stream.HandshakeFailure(err)
 			_ = stream.Close()
 			return
 		}
@@ -217,11 +239,13 @@ func (s *Service) AuthenticateConnection(ctx context.Context, conn net.Conn, sou
 		valid := !s.closed && s.users[passwordSha256] == account
 		s.mu.RUnlock()
 		if !valid {
+			_ = stream.HandshakeFailure(E.New("unauthorized stream"))
 			_ = stream.Close()
 			return
 		}
 		s.handler.NewConnectionEx(ctx, stream, source, destination, onClose)
 	}, &s.padding, s.logger)
+	session.SetMaxStreams(maxSessionStreams)
 	// Recheck the immutable account generation after parsing. A removal/re-add
 	// between authentication and registration cannot resurrect the old session.
 	if !s.registerSession(session, account, original) {
@@ -233,6 +257,17 @@ func (s *Service) AuthenticateConnection(ctx context.Context, conn net.Conn, sou
 	defer func() { s.mu.Lock(); delete(s.sessions, session); s.mu.Unlock() }()
 	session.Run()
 	session.Close()
+	return nil
+}
+
+func (s *Service) fallbackWithPrefix(ctx context.Context, conn net.Conn, prefix []byte, source M.Socksaddr, err error, onClose N.CloseHandlerFunc) error {
+	if s.fallbackHandler == nil {
+		return E.Extend(err, "fallback disabled")
+	}
+	if len(prefix) > 0 {
+		conn = bufio.NewCachedConn(conn, buf.As(prefix))
+	}
+	s.fallbackHandler.NewConnectionEx(ctx, conn, source, M.Socksaddr{}, onClose)
 	return nil
 }
 

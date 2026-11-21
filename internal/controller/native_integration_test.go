@@ -51,6 +51,7 @@ func newNativeHarness(t *testing.T) *nativeHarness {
 	NewXray(a, logger).Router(mux)
 	NewHandler(a, logger).Router(mux)
 	NewInternal(a, logger).Router(mux)
+	NewStats(a, logger).Router(mux)
 	port := testutil.Port(t)
 	cfg := map[string]any{"log": map[string]any{"disabled": true}, "inbounds": []any{map[string]any{"type": "anytls", "tag": "any", "listen": "127.0.0.1", "listen_port": port, "tls": testutil.TLS(t), "users": []any{map[string]any{"name": "1", "password": testutil.UUID1}, map[string]any{"name": "2", "password": testutil.UUID2}}}}, "outbounds": []any{map[string]any{"type": "direct", "tag": "direct"}}, "route": map[string]any{"final": "direct"}, "dns": map[string]any{"servers": []any{map[string]any{"type": "local", "tag": "local"}}}}
 	return &nativeHarness{t, a, e, s, mux, port, cfg}
@@ -168,6 +169,41 @@ func TestNativeStartPreflightHotUpdatesManagementAndRollback(t *testing.T) {
 	}
 	if !seen {
 		t.Fatal("native user traffic missing")
+	}
+	outboundStats, err := h.app.Query(context.Background(), []string{"outbound>>>"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenOutbound := false
+	for _, counter := range outboundStats {
+		if strings.Contains(counter.Name, "outbound>>>direct>>>") && counter.Value >= 4 {
+			seenOutbound = true
+		}
+	}
+	if !seenOutbound {
+		t.Fatalf("native outbound traffic missing from v2ray_api stats: %#v", outboundStats)
+	}
+	combinedRec := h.call("POST", "/node/stats/get-combined-stats", map[string]any{"reset": false})
+	var combined struct {
+		Response struct {
+			Outbounds []struct {
+				Outbound string `json:"outbound"`
+				Uplink   int64  `json:"uplink"`
+				Downlink int64  `json:"downlink"`
+			} `json:"outbounds"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(combinedRec.Body.Bytes(), &combined); err != nil {
+		t.Fatal(err)
+	}
+	foundCombined := false
+	for _, ob := range combined.Response.Outbounds {
+		if ob.Outbound == "direct" && ob.Uplink >= 4 && ob.Downlink >= 4 {
+			foundCombined = true
+		}
+	}
+	if !foundCombined {
+		t.Fatalf("combined-stats endpoint did not expose native outbound counters: %s", combinedRec.Body.String())
 	}
 	before, generation := h.state.Snapshot()
 	raw := h.state.RawConfig()
@@ -296,6 +332,36 @@ func TestNativeStartPreflightHotUpdatesManagementAndRollback(t *testing.T) {
 	if err = testutil.NewClient(t, h.port, testutil.UUID1).RoundTrip(destination); err != nil {
 		t.Fatal("failed to restore native route", err)
 	}
+	// Explicit untagged outbound ("0") must also report combined outbound traffic.
+	untaggedCfg := cloneConfig(t, h.config)
+	untaggedCfg["outbounds"] = []any{map[string]any{"type": "direct"}}
+	delete(untaggedCfg["route"].(map[string]any), "final")
+	h.start(untaggedCfg, "singbox", false, "")
+	if err = testutil.NewClient(t, h.port, testutil.UUID1).RoundTrip(destination); err != nil {
+		t.Fatal("untagged outbound traffic failed", err)
+	}
+	untaggedRec := h.call("POST", "/node/stats/get-combined-stats", map[string]any{"reset": true})
+	var untaggedCombined struct {
+		Response struct {
+			Outbounds []struct {
+				Outbound string `json:"outbound"`
+				Uplink   int64  `json:"uplink"`
+				Downlink int64  `json:"downlink"`
+			} `json:"outbounds"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(untaggedRec.Body.Bytes(), &untaggedCombined); err != nil {
+		t.Fatal(err)
+	}
+	foundUntagged := false
+	for _, ob := range untaggedCombined.Response.Outbounds {
+		if ob.Outbound == "0" && ob.Uplink >= 4 && ob.Downlink >= 4 {
+			foundUntagged = true
+		}
+	}
+	if !foundUntagged {
+		t.Fatalf("untagged explicit outbound was not counted in combined-stats: %s", untaggedRec.Body.String())
+	}
 }
 
 func TestNativeVLESSAndEmptySSWithLegacyFormatSwitch(t *testing.T) {
@@ -370,6 +436,14 @@ func TestNativeVLESSAndEmptySSWithLegacyFormatSwitch(t *testing.T) {
 	if h.state.Format() != contract.XrayConfig {
 		t.Fatal("legacy format not restored")
 	}
+	legacyClashResp, err := http.Get("http://" + h.engine.ClashAddr() + "/connections")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = legacyClashResp.Body.Close()
+	if legacyClashResp.StatusCode != 401 {
+		t.Fatalf("legacy transpiled Clash API was left unauthenticated: %d", legacyClashResp.StatusCode)
+	}
 	view = h.call("GET", "/internal/get-config", nil)
 	var legacyView map[string]any
 	_ = json.Unmarshal(view.Body.Bytes(), &legacyView)
@@ -386,10 +460,12 @@ func TestNativeVLESSAndEmptySSWithLegacyFormatSwitch(t *testing.T) {
 func TestNativeRollbackFailureReportsOfflineAndFullPushRecovers(t *testing.T) {
 	h := newNativeHarness(t)
 	original := cloneConfig(t, h.config)
+	certDir := t.TempDir()
+	h.app.SetAllowedCertDirs([]string{certDir})
 	tlsOptions := nativeInbound(h.config)["tls"].(map[string]any)
 	var certificatePath string
 	for _, field := range []string{"certificate", "key"} {
-		path := filepath.Join(t.TempDir(), field+".pem")
+		path := filepath.Join(certDir, field+".pem")
 		if err := os.WriteFile(path, []byte(tlsOptions[field].([]string)[0]), 0600); err != nil {
 			t.Fatal(err)
 		}

@@ -60,9 +60,10 @@ type App struct {
 	pendingRevocations map[string]struct{}
 
 	// desired working config derived from the last panel push
-	statsAddr string
-	clashAddr string
-	logLevel  string
+	statsAddr       string
+	clashAddr       string
+	logLevel        string
+	allowedCertDirs []string
 
 	// preStart cleanupSockets config from the last plugin sync.
 	preMu      sync.Mutex
@@ -132,12 +133,22 @@ func (a *App) StartConfig(raw []byte, format contract.ConfigFormat, force bool) 
 		if err != nil {
 			return fmt.Errorf("transpile: %w", err)
 		}
+		if exp, ok := res.Config["experimental"].(map[string]any); ok {
+			if clash, ok := exp["clash_api"].(map[string]any); ok {
+				clash["secret"] = a.proc.ClashSecret()
+			}
+		}
 		prepared = res.Config
 	case contract.SingBoxConfig:
 		if !contract.NativeConfigAvailable {
 			return fmt.Errorf("native config requires with_clash_api and with_v2ray_api build tags")
 		}
-		res, err := nativeconfig.Prepare(raw, nativeconfig.Management{StatsAddress: a.statsAddr, ClashAddress: a.clashAddr, ClashSecret: a.proc.ClashSecret()})
+		res, err := nativeconfig.Prepare(raw, nativeconfig.Management{
+			StatsAddress:    a.statsAddr,
+			ClashAddress:    a.clashAddr,
+			ClashSecret:     a.proc.ClashSecret(),
+			AllowedCertDirs: a.allowedCertDirs,
+		})
 		if err != nil {
 			return fmt.Errorf("prepare native config: %w", err)
 		}
@@ -557,6 +568,13 @@ func (a *App) RunPostStart(metadata json.RawMessage) {
 			a.logger.Warn("post-start webhook failed", "error", fmt.Sprintf("HTTP %d", resp.StatusCode))
 		}
 	}()
+}
+
+// SetAllowedCertDirs extends the certificate path allowlist (used by isolated tests).
+func (a *App) SetAllowedCertDirs(dirs []string) {
+	a.configMu.Lock()
+	a.allowedCertDirs = append([]string(nil), dirs...)
+	a.configMu.Unlock()
 }
 
 // SetAsnIndex wires in an optional ASN index used to resolve "asList" shared

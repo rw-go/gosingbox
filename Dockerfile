@@ -46,7 +46,7 @@ RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
 
 FROM alpine:3.21
 
-ARG PACKAGE_VERSION=3.4.1.22
+ARG PACKAGE_VERSION=3.4.1.23
 ARG SOURCE_REVISION=unknown
 
 LABEL org.opencontainers.image.title="gosingbox" \

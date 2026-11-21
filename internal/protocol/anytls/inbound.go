@@ -5,6 +5,7 @@ import (
 	"context"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
@@ -150,9 +151,13 @@ func (h *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata ada
 	h.acceptConnection(ctx, conn, metadata, onClose, release)
 }
 
+const tlsHandshakeTimeout = 10 * time.Second
+
 func (h *Inbound) acceptConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc, release func()) {
 	if h.tlsConfig != nil {
-		tlsConn, err := tls.ServerHandshake(ctx, conn, h.tlsConfig)
+		tlsCtx, cancel := context.WithTimeout(ctx, tlsHandshakeTimeout)
+		tlsConn, err := tls.ServerHandshake(tlsCtx, conn, h.tlsConfig)
+		cancel()
 		if err != nil {
 			N.CloseOnHandshakeFailure(conn, onClose, err)
 			h.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", metadata.Source, ": TLS handshake"))

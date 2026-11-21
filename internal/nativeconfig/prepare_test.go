@@ -63,7 +63,7 @@ func TestPreservesNativeFieldsAndOwnsManagement(t *testing.T) {
 	if clash["secret"] != management.ClashSecret || clash["external_controller"] != management.ClashAddress || clash["default_mode"] != "rule" || api["listen"] != management.StatsAddress {
 		t.Fatal("management merge incorrect")
 	}
-	if stats["enabled"] != true || !reflect.DeepEqual(stats["users"], []string{"1"}) || !reflect.DeepEqual(stats["inbounds"], []string{"any", "other"}) || !reflect.DeepEqual(stats["outbounds"], []any{"out"}) {
+	if stats["enabled"] != true || !reflect.DeepEqual(stats["users"], []string{"1"}) || !reflect.DeepEqual(stats["inbounds"], []string{"any", "other"}) || !reflect.DeepEqual(stats["outbounds"], []string{"out"}) {
 		t.Fatal("statistics merge incorrect")
 	}
 	if len(p.Users["any"].Users) != 1 {
@@ -85,7 +85,10 @@ func TestRejectsUnmanagedOrInvalidNativeInput(t *testing.T) {
 		{"reality-anytls", "ordinary TLS", func(c map[string]any) { first(c)["tls"].(map[string]any)["reality"] = map[string]any{"enabled": true} }},
 		{"bad-cert", "invalid TLS", func(c map[string]any) { first(c)["tls"].(map[string]any)["certificate"] = "bad" }},
 		{"missing-cert-file", "read TLS certificate file", func(c map[string]any) {
-			first(c)["tls"] = map[string]any{"enabled": true, "certificate_path": filepath.Join(t.TempDir(), "missing.pem")}
+			first(c)["tls"] = map[string]any{"enabled": true, "certificate_path": "/etc/ssl/nonexistent-gosingbox-test-cert.pem"}
+		}},
+		{"outside-cert-dir", "outside allowed certificate directories", func(c map[string]any) {
+			first(c)["tls"] = map[string]any{"enabled": true, "certificate_path": filepath.Join(t.TempDir(), "unlisted.pem")}
 		}},
 		{"vless-transport", "TCP", func(c map[string]any) {
 			first(c)["type"] = "vless"
@@ -100,6 +103,21 @@ func TestRejectsUnmanagedOrInvalidNativeInput(t *testing.T) {
 		{"null-experimental", "object", func(c map[string]any) { c["experimental"] = nil }},
 		{"invalid-stats-inbounds", "array", func(c map[string]any) {
 			c["experimental"] = map[string]any{"v2ray_api": map[string]any{"stats": map[string]any{"inbounds": false}}}
+		}},
+		{"invalid-stats-outbounds", "array", func(c map[string]any) {
+			c["experimental"] = map[string]any{"v2ray_api": map[string]any{"stats": map[string]any{"outbounds": false}}}
+		}},
+		{"log-output-path", "log.output", func(c map[string]any) {
+			c["log"] = map[string]any{"level": "warn", "output": "/tmp/node.log"}
+		}},
+		{"cache-file-path", "cache_file.path", func(c map[string]any) {
+			c["experimental"] = map[string]any{"cache_file": map[string]any{"enabled": true, "path": "/tmp/cache.db"}}
+		}},
+		{"acme-data-dir", "acme.data_directory", func(c map[string]any) {
+			first(c)["tls"] = map[string]any{"enabled": true, "acme": map[string]any{"data_directory": "/tmp/acme"}}
+		}},
+		{"relative-cert-path", "clean absolute path", func(c map[string]any) {
+			first(c)["tls"] = map[string]any{"enabled": true, "certificate_path": "relative/cert.pem"}
 		}},
 	}
 	for _, tc := range tests {
@@ -197,6 +215,9 @@ func TestFixedPasswordSSIsAuxiliaryButCountedInNodeTraffic(t *testing.T) {
 	if !reflect.DeepEqual(stats["users"], []string{"1"}) {
 		t.Fatal("relay was assigned personal usage")
 	}
+	if !reflect.DeepEqual(stats["outbounds"], []string{"direct"}) {
+		t.Fatalf("implicit direct outbound was not accounted: %#v", stats["outbounds"])
+	}
 	ss["managed"] = true
 	if _, err = prepare(t, c, management); err == nil || !strings.Contains(err.Error(), "explicit users") {
 		t.Fatal("managed mode without users accepted")
@@ -209,16 +230,112 @@ func TestFixedPasswordSSIsAuxiliaryButCountedInNodeTraffic(t *testing.T) {
 func TestTLSCertificateFilesAreCheckedBeforeApply(t *testing.T) {
 	c := config(t)
 	options := first(c)["tls"].(map[string]any)
+	certRoot := t.TempDir()
+	archiveDir := filepath.Join(certRoot, "archive")
+	liveDir := filepath.Join(certRoot, "live")
+	if err := os.MkdirAll(archiveDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(liveDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	for _, field := range []string{"certificate", "key"} {
-		path := filepath.Join(t.TempDir(), field+".pem")
-		if err := os.WriteFile(path, []byte(options[field].([]string)[0]), 0600); err != nil {
+		realFile := filepath.Join(archiveDir, field+"1.pem")
+		if err := os.WriteFile(realFile, []byte(options[field].([]string)[0]), 0600); err != nil {
+			t.Fatal(err)
+		}
+		linkFile := filepath.Join(liveDir, field+".pem")
+		// Let's Encrypt style symlink within the allowed certificate tree must work.
+		if err := os.Symlink(filepath.Join("..", "archive", field+"1.pem"), linkFile); err != nil {
 			t.Fatal(err)
 		}
 		delete(options, field)
 		options[field] = []string{} // Empty inline defaults must not hide the file.
-		options[field+"_path"] = path
+		options[field+"_path"] = linkFile
 	}
-	if _, err := prepare(t, c, management); err != nil {
+	m := management
+	m.AllowedCertDirs = []string{certRoot}
+	if _, err := prepare(t, c, m); err != nil {
 		t.Fatal(err)
+	}
+	// Symlink escaping outside AllowedCertDirs must be rejected.
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "escaped.pem")
+	if err := os.WriteFile(outsideFile, []byte("irrelevant"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	escapeLink := filepath.Join(liveDir, "escape.pem")
+	if err := os.Symlink(outsideFile, escapeLink); err != nil {
+		t.Fatal(err)
+	}
+	options["certificate_path"] = escapeLink
+	if _, err := prepare(t, c, m); err == nil || !strings.Contains(err.Error(), "outside allowed certificate directories") {
+		t.Fatalf("expected symlink escape rejection, got %v", err)
+	}
+}
+
+func TestOutboundStatsAndClashExternalUISanitization(t *testing.T) {
+	c := config(t)
+	c["outbounds"] = []any{
+		map[string]any{"type": "direct", "tag": "DIRECT"},
+		map[string]any{"type": "shadowsocks", "tag": "ss_to_hk6"},
+		map[string]any{"type": "block", "tag": "block"},
+	}
+	c["experimental"] = map[string]any{
+		"cache_file": map[string]any{
+			"enabled": true,
+			"path":    "/var/lib/gosingbox/singbox/domain-rule-cache.db",
+		},
+		"clash_api": map[string]any{
+			"external_ui":              "/tmp/ui",
+			"external_ui_download_url": "https://example.invalid/ui.zip",
+			"default_mode":             "rule",
+		},
+		"v2ray_api": map[string]any{
+			"stats": map[string]any{
+				"outbounds": []any{"custom-out", "DIRECT"},
+			},
+		},
+	}
+	p, err := prepare(t, c, management)
+	if err != nil {
+		t.Fatalf("production cache_file.path rejected: %v", err)
+	}
+	exp := p.Config["experimental"].(map[string]any)
+	clash := exp["clash_api"].(map[string]any)
+	if _, hasUI := clash["external_ui"]; hasUI {
+		t.Fatal("external_ui was not stripped")
+	}
+	if _, hasURL := clash["external_ui_download_url"]; hasURL {
+		t.Fatal("external_ui_download_url was not stripped")
+	}
+	if clash["default_mode"] != "rule" {
+		t.Fatal("benign clash_api field lost")
+	}
+	stats := exp["v2ray_api"].(map[string]any)["stats"].(map[string]any)
+	if !reflect.DeepEqual(stats["outbounds"], []string{"DIRECT", "ss_to_hk6", "custom-out"}) {
+		t.Fatalf("unexpected stats.outbounds: %#v", stats["outbounds"])
+	}
+
+	// Dot-prefixed .cache.db inside /var/lib/gosingbox is also valid.
+	c["experimental"].(map[string]any)["cache_file"].(map[string]any)["path"] = "/var/lib/gosingbox/singbox/geo/.cache.db"
+	if _, err := prepare(t, c, management); err != nil {
+		t.Fatalf("dot-prefixed cache_file.path rejected: %v", err)
+	}
+
+	// Untagged explicit outbounds use zero-based index tags ("0", "2") matching sing-box box.go.
+	untagged := config(t)
+	untagged["outbounds"] = []any{
+		map[string]any{"type": "direct"},
+		map[string]any{"type": "block"},
+		map[string]any{"type": "shadowsocks"},
+	}
+	pu, err := prepare(t, untagged, management)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uStats := pu.Config["experimental"].(map[string]any)["v2ray_api"].(map[string]any)["stats"].(map[string]any)
+	if !reflect.DeepEqual(uStats["outbounds"], []string{"0", "2"}) {
+		t.Fatalf("unexpected untagged stats.outbounds: %#v", uStats["outbounds"])
 	}
 }

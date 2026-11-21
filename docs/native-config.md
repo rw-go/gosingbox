@@ -60,8 +60,9 @@ DNS、路由、出站、日志、有效原生字段及 `experimental` 其他配�
 节点覆盖以下运行时管理字段，其他同级字段保留：
 
 - `experimental.v2ray_api.listen`：使用节点的 `SINGBOX_STATS_ADDRESS`。
-- `experimental.v2ray_api.stats.enabled/users`：开启计数，用户列表来自当前各纳管入站；inbounds 合并纳管 tag 和配置原有列表，outbounds 保留。
-- `experimental.clash_api.external_controller/secret`：使用节点的 `SINGBOX_CLASH_ADDRESS` 和每个 Engine 实例生成的随机密钥；在线查询及连接关闭自动带 Bearer 鉴权。
+- `experimental.v2ray_api.stats.enabled/users/inbounds/outbounds`：开启计数，用户列表来自当前各纳管入站；`inbounds` 合并纳管 tag、固定密码 SS2022 入站与配置原有列表；`outbounds` 自动收集非 `block`/`dns` 出站（含省略出站时的默认 `direct` 及无 tag 显式出站的序号命名 `"0"`, `"1"`, ...）并合并配置原有列表。
+- `experimental.clash_api.external_controller/secret`：使用节点的 `SINGBOX_CLASH_ADDRESS` 和每个 Engine 实例生成的随机密钥，同时剥离 `external_ui` 等外部下载/静态目录项；在线查询及连接关闭自动带 Bearer 鉴权。
+- 本地路径边界：拒绝 `log.output` 与 `tls.acme.data_directory`；`experimental.cache_file.path` 仅允许 `/var/lib/gosingbox`（及 `SINGBOX_GEO_DIR`）下的规范 `.db` 文件；`tls.certificate_path` / `tls.key_path` 仅允许位于 `/etc/gosingbox`、`/var/lib/gosingbox`、`/etc/ssl`、`/etc/letsencrypt`、`/etc/pki`、`/tls` 下的常规文件（允许目录树内部如 Let's Encrypt `live -> archive` 软链，拒绝越界软链）。
 
 原生模式下两个管理地址必须是明确的回环 IP 和非零端口，不能使用公开地址或主机名；它们不能相同。配置中提供的监听地址或 secret 按上述规则覆盖，类型错误明确失败。gRPC 统计接口没有新增鉴权，依靠回环限制；Clash 同时具有回环限制和随机密钥。密钥在同一节点进程的重建和回滚中保持不变，不写入保存的输入配置。
 

@@ -126,10 +126,9 @@ func (e *Engine) parseOptions(config map[string]any, format contract.ConfigForma
 	if err != nil {
 		return nil, option.Options{}, fmt.Errorf("parse sing-box options: %w", err)
 	}
-	if format == contract.SingBoxConfig {
-		if err := e.protectDirectOutbounds(ctx, &opts); err != nil {
-			return nil, option.Options{}, err
-		}
+	_ = format
+	if err := e.protectDirectOutbounds(ctx, &opts); err != nil {
+		return nil, option.Options{}, err
 	}
 	return ctx, opts, nil
 }

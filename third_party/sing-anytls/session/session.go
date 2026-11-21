@@ -18,6 +18,8 @@ import (
 	"github.com/sagernet/sing/common/logger"
 )
 
+const MaxStreamsPerSession = 512
+
 type Session struct {
 	conn     net.Conn
 	connLock sync.Mutex
@@ -25,6 +27,7 @@ type Session struct {
 	streams    map[uint32]*Stream
 	streamId   atomic.Uint32
 	streamLock sync.RWMutex
+	maxStreams int
 
 	dieOnce sync.Once
 	die     chan struct{}
@@ -71,10 +74,34 @@ func NewServerSession(conn net.Conn, onNewStream func(stream *Stream), _padding 
 		onNewStream: onNewStream,
 		padding:     _padding,
 		logger:      logger,
+		maxStreams:  MaxStreamsPerSession,
 	}
 	s.die = make(chan struct{})
 	s.streams = make(map[uint32]*Stream)
 	return s
+}
+
+func (s *Session) SetMaxStreams(limit int) {
+	s.streamLock.Lock()
+	if limit <= 0 {
+		s.maxStreams = MaxStreamsPerSession
+	} else {
+		s.maxStreams = limit
+	}
+	s.streamLock.Unlock()
+}
+
+func (s *Session) ActiveStreams() int {
+	s.streamLock.RLock()
+	defer s.streamLock.RUnlock()
+	return len(s.streams)
+}
+
+func (s *Session) streamLimit() int {
+	if s.maxStreams <= 0 {
+		return MaxStreamsPerSession
+	}
+	return s.maxStreams
 }
 
 func (s *Session) Run() {
@@ -211,23 +238,39 @@ func (s *Session) recvLoop() error {
 					s.writeControlFrame(f)
 					return nil
 				}
+				var rejected bool
 				s.streamLock.Lock()
 				if s.IsClosed() {
 					s.streamLock.Unlock()
 					return io.ErrClosedPipe
 				}
 				if _, ok := s.streams[sid]; !ok {
-					stream := newStream(sid, s)
-					s.streams[sid] = stream
-					go func() {
-						if s.onNewStream != nil {
-							s.onNewStream(stream)
-						} else {
-							stream.Close()
-						}
-					}()
+					if len(s.streams) >= s.streamLimit() {
+						rejected = true
+					} else {
+						stream := newStream(sid, s)
+						s.streams[sid] = stream
+						go func() {
+							if s.onNewStream != nil {
+								s.onNewStream(stream)
+							} else {
+								stream.Close()
+							}
+						}()
+					}
 				}
 				s.streamLock.Unlock()
+				if rejected {
+					if s.peerVersion.Load() >= 2 {
+						f := newFrame(cmdSYNACK, sid)
+						f.data = []byte("stream limit exceeded")
+						if _, err := s.writeControlFrame(f); err != nil {
+							return err
+						}
+					} else if _, err := s.writeControlFrame(newFrame(cmdFIN, sid)); err != nil {
+						return err
+					}
+				}
 			case cmdSYNACK: // should be client only
 				s.synDoneLock.Lock()
 				if s.synDone != nil {
@@ -365,13 +408,13 @@ func (s *Session) recvLoop() error {
 }
 
 func (s *Session) streamClosed(sid uint32) error {
+	s.streamLock.Lock()
+	delete(s.streams, sid)
+	s.streamLock.Unlock()
 	if s.IsClosed() {
 		return io.ErrClosedPipe
 	}
 	_, err := s.writeControlFrame(newFrame(cmdFIN, sid))
-	s.streamLock.Lock()
-	delete(s.streams, sid)
-	s.streamLock.Unlock()
 	return err
 }
 

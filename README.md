@@ -7,16 +7,15 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 > 原生模式支持 **AnyTLS（普通 TLS）**、**TCP VLESS（保留 TLS/Reality 和 flow）**、
 > **SS2022 AES-128/256-GCM 多用户**；Xray 输入继续沿用原有转译行为。
 
-当前发布版本 **3.4.1.20**，内嵌 sing-box **1.14.3**，Panel 上报 `nodeVersion=3.4.1`。
+当前发布版本 **3.4.1.23**，内嵌 sing-box **1.14.3**，Panel 上报 `nodeVersion=3.4.1`。
 原生集成包含 [节点能力扩展 v1](docs/node-capabilities.md)、
 [按入站管理用户及 AnyTLS 生命周期](docs/user-lifecycle.md) 和
 [原生配置入口](docs/native-config.md)。已与配套修改版 Panel 完成原生 Profile、权限、
 用户同步、订阅及实际 AnyTLS/VLESS 连接验证；官方 Xray 格式输入保留原有转译路径。
 原生配置需要支持该扩展的 Panel；仅升级节点不会给官方 Panel 增加配置编辑能力。
 
-本次发布渠道为 **Docker Hub 与 Bitbucket**，GitHub 尚未同步。请使用下方 Bitbucket
-安装入口或 `rwnode/gosingbox:3.4.1.20`。本版新增 AnyTLS 按 SNI 共用 TCP 443，
-配置与兼容边界见 [3.4.1.20 发布说明](docs/releases/3.4.1.20.md)。
+发布渠道覆盖 **Docker Hub、Bitbucket 与 GitHub**。请使用下方一键安装入口或镜像
+`rwnode/gosingbox:3.4.1.23`。版本演进与兼容边界见 [3.4.1.23 发布说明](docs/releases/3.4.1.23.md)。
 
 ## 特性
 
@@ -41,13 +40,17 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 
 ## 一键安装（OpenRC / systemd）
 
-### Bitbucket 安装（本次发布渠道）
+### 途径 A：从 GitHub 安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox.sh | GOSINGBOX_RELEASE_SOURCE=github sh
+```
+
+### 途径 B：从 Bitbucket 安装
 
 ```bash
 wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox.sh | sh
 ```
-
-GitHub 仓库仍保留旧版本；本次原生集成暂不从 GitHub 安装。
 
 或带参数：
 
@@ -63,9 +66,15 @@ Alpine 用 OpenRC，Debian/Ubuntu/Arch 等用 systemd。
 ## Docker 安装（推荐用于通用 Linux）
 
 Docker 版使用单进程 Alpine 镜像（内嵌 sing-box，不包含 Node.js、Xray 或 s6），默认镜像：
-`rwnode/gosingbox:latest`。生产部署可固定为 `rwnode/gosingbox:3.4.1.20`。
+`rwnode/gosingbox:latest`。生产部署可固定为 `rwnode/gosingbox:3.4.1.23`。
 
-一键安装（从 Bitbucket）：
+一键安装（从 GitHub）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox-docker.sh | sh
+```
+
+或从 Bitbucket：
 
 ```bash
 wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox-docker.sh | sh
