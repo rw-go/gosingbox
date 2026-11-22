@@ -81,6 +81,7 @@ func Prepare(raw []byte, management Management) (*Prepared, error) {
 		}
 	}
 	seen := map[string]bool{}
+	hasPrimaryInbound := false
 	for _, value := range inbounds {
 		inbound, ok := value.(map[string]any)
 		if !ok {
@@ -94,6 +95,7 @@ func Prepare(raw []byte, management Management) (*Prepared, error) {
 		kind, _ := inbound["type"].(string)
 		switch kind {
 		case "anytls":
+			hasPrimaryInbound = true
 			options, ok := inbound["tls"].(map[string]any)
 			if !ok || options["enabled"] != true {
 				return nil, fmt.Errorf("inbound %q: AnyTLS requires TLS", tag)
@@ -102,10 +104,12 @@ func Prepare(raw []byte, management Management) (*Prepared, error) {
 				return nil, fmt.Errorf("inbound %q: AnyTLS requires ordinary TLS", tag)
 			}
 		case "vless":
+			hasPrimaryInbound = true
 			if transport := inbound["transport"]; transport != nil {
 				return nil, fmt.Errorf("inbound %q: managed VLESS currently supports TCP without a transport wrapper", tag)
 			}
 		case "shadowsocks":
+			hasPrimaryInbound = true
 			if value, present := inbound["managed"]; present {
 				if _, ok := value.(bool); !ok {
 					return nil, fmt.Errorf("inbound %q: managed must be a boolean", tag)
@@ -130,12 +134,19 @@ func Prepare(raw []byte, management Management) (*Prepared, error) {
 			if err != nil || len(key) < minimum {
 				return nil, fmt.Errorf("inbound %q: invalid Shadowsocks server key", tag)
 			}
-			if _, present := inbound["users"]; !present {
-				if inbound["managed"] == true {
-					return nil, fmt.Errorf("inbound %q: managed Shadowsocks requires an explicit users array", tag)
+			var ssUsers []any
+			if rawUsers, present := inbound["users"]; present {
+				list, ok := rawUsers.([]any)
+				if !ok {
+					return nil, fmt.Errorf("inbound %q: users must be an array", tag)
 				}
-				// Native single-password relay: keep the PSK and do not enroll this
-				// listener in panel user updates. The core owns authentication here.
+				ssUsers = list
+			}
+			delete(inbound, "managed")
+			if len(ssUsers) == 0 {
+				// Unified SS2022 password rule: 0 bound users always runs in
+				// single-user PSK relay mode (omitting users and managed).
+				delete(inbound, "users")
 				continue
 			}
 		case "direct":
@@ -155,18 +166,8 @@ func Prepare(raw []byte, management Management) (*Prepared, error) {
 			users = []any{}
 			inbound["users"] = users
 		}
-		list, ok := users.([]any)
-		if !ok {
+		if _, ok := users.([]any); !ok {
 			return nil, fmt.Errorf("inbound %q: users must be an array", tag)
-		}
-		if kind == "shadowsocks" {
-			// sing-box selects a single-password server unless an empty list is marked
-			// managed; it rejects managed=true combined with a nonempty user list.
-			if len(list) == 0 {
-				inbound["managed"] = true
-			} else {
-				delete(inbound, "managed")
-			}
 		}
 		if options, ok := inbound["tls"].(map[string]any); ok && options["enabled"] == true {
 			if err := checkCertificate(options, management.certDirs()); err != nil {
@@ -174,12 +175,12 @@ func Prepare(raw []byte, management Management) (*Prepared, error) {
 			}
 		}
 	}
+	if !hasPrimaryInbound {
+		return nil, fmt.Errorf("native config needs at least one managed inbound")
+	}
 	users, err := state.FromConfig(config)
 	if err != nil {
 		return nil, err
-	}
-	if len(users) == 0 {
-		return nil, fmt.Errorf("native config needs at least one managed inbound")
 	}
 	if err = injectManagement(config, users, management); err != nil {
 		return nil, err
@@ -234,13 +235,19 @@ func injectManagement(config map[string]any, users state.Snapshot, management Ma
 	v2ray["listen"] = management.StatsAddress
 	stats["enabled"] = true
 	stats["users"] = users.Names()
-	// Include fixed-password relays in node traffic, but never in personal usage.
+	// Include 0-user single-password SS2022 relays in node traffic, but never in personal usage.
 	tags := users.Tags()
+	seenTags := make(map[string]bool, len(tags))
+	for _, tag := range tags {
+		seenTags[tag] = true
+	}
 	for _, value := range config["inbounds"].([]any) {
 		inbound := value.(map[string]any)
 		if inbound["type"] == "shadowsocks" {
-			if _, hasUsers := inbound["users"]; !hasUsers && inbound["managed"] != true {
-				tags = append(tags, inbound["tag"].(string))
+			tag, _ := inbound["tag"].(string)
+			if _, hasUsers := inbound["users"]; !hasUsers && inbound["managed"] != true && tag != "" && !seenTags[tag] {
+				tags = append(tags, tag)
+				seenTags[tag] = true
 			}
 		}
 	}

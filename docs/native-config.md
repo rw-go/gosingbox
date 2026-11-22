@@ -44,12 +44,12 @@
 | --- | --- |
 | `anytls` | 普通 TLS；用户 `name` 为稳定 ID，`password` 为当前凭据；配套面板统一注入用户的 `vlessUuid`。拒绝 Reality。 |
 | `vless` | TCP，无额外 transport 包装；保留 TLS/Reality 参数及每个用户的 flow。空 flow 保持为空。 |
-| `shadowsocks` | SS2022 AES-128/256-GCM；带 `users` 为托管多用户，省略 `users` 且未设 `managed: true` 为固定密码中转。检查服务端与用户密钥。 |
+| `shadowsocks` | SS2022 AES-128/256-GCM；与 Xray 模式统一密码规则——0 授权用户时（无论省略 `users`、`users: []` 或附带 `managed: true`）运行单密码 PSK 中转模式，授权用户数 `> 0` 时运行多用户 EIH 模式。检查服务端与用户密钥。 |
 | `direct` | 辅助入站，必须显式绑定回环 IP，无 users，不参与用户同步。 |
 
-必须至少有一个纳管入站，所有入站 tag 非空且唯一。其他入站以及非空 `endpoints`、`services` 当前明确拒绝，不能绕过用户管理边界。VLESS/AnyTLS 省略 users 等同空列表；SS2022 空列表自动标记为 fork 的 `managed: true`，避免退回共享 PSK 模式。有用户时移除此标记。
+必须至少有一个主入站（`anytls`、`vless` 或 `shadowsocks`，不能仅有辅助 `direct` 入站），所有入站 tag 非空且唯一。其他入站以及非空 `endpoints`、`services` 当前明确拒绝，不能绕过用户管理边界。VLESS/AnyTLS 省略 `users` 等同空列表；SS2022 在 0 用户时统一剥离 `users` 与 `managed` 以运行单密码 PSK 模式，在有用户时携带 `users` 并移除 `managed` 以运行多用户 EIH 模式。
 
-固定密码 SS2022 自 3.4.1.21 起支持原生下发：仅使用入站 `password`，不参与面板用户增删和个人流量统计，仍计入节点入站流量。配套面板把它视作辅助入站，不提供权限组或订阅 Host 绑定；权限应加到单独的托管端口。`users: []` 始终是关闭用户访问的托管模式，撤销最后一个用户不会开放服务端密码。显式 `managed: true` 必须同时提供 `users`。旧 Xray 转译路径的行为不变。
+原生 `coreType: "singbox"` 与旧 Xray 转译路径（`coreType: "xray"` 或省略）遵循完全一致的 SS2022 动态模式切换语义：当 SS2022 入站绑定/授权用户数为 0 时，始终仅使用入站 `password` 进行服务端间单密码 PSK 中转，计入节点入站流量（`v2ray_api.stats.inbounds`）而不计入任何个人用户流量；当通过全量 `/node/xray/start` 或增量 `add-user(s)` 下发授权用户（`> 0` 用户）时，自动切换为多用户 EIH（`<serverPSK>:<userKey>`）模式并拒绝裸服务端 PSK；当最后一个授权用户通过全量推送或增量 `remove-user(s)` 撤销（回到 0 用户）时，立即关闭原 EIH 连接并恢复单密码 PSK 中转模式。
 
 所有配置仍须通过锁定内嵌版本的实际 option schema 和实例启动校验。接受 VLESS/Reality 配置不等于已验收其所有客户端组合；真实流量覆盖普通 AnyTLS、空 flow 的 TCP VLESS 和 SS2022；后续部署联调另已验证实际订阅生成的原生 VLESS Reality Vision，以及既有 Xray Reality 转译路径。
 
@@ -60,7 +60,7 @@ DNS、路由、出站、日志、有效原生字段及 `experimental` 其他配�
 节点覆盖以下运行时管理字段，其他同级字段保留：
 
 - `experimental.v2ray_api.listen`：使用节点的 `SINGBOX_STATS_ADDRESS`。
-- `experimental.v2ray_api.stats.enabled/users/inbounds/outbounds`：开启计数，用户列表来自当前各纳管入站；`inbounds` 合并纳管 tag、固定密码 SS2022 入站与配置原有列表；`outbounds` 自动收集非 `block`/`dns` 出站（含省略出站时的默认 `direct` 及无 tag 显式出站的序号命名 `"0"`, `"1"`, ...）并合并配置原有列表。
+- `experimental.v2ray_api.stats.enabled/users/inbounds/outbounds`：开启计数，用户列表来自当前各纳管入站；`inbounds` 合并纳管 tag、0 用户单密码 SS2022 入站与配置原有列表；`outbounds` 自动收集非 `block`/`dns` 出站（含省略出站时的默认 `direct` 及无 tag 显式出站的序号命名 `"0"`, `"1"`, ...）并合并配置原有列表。
 - `experimental.clash_api.external_controller/secret`：使用节点的 `SINGBOX_CLASH_ADDRESS` 和每个 Engine 实例生成的随机密钥，同时剥离 `external_ui` 等外部下载/静态目录项；在线查询及连接关闭自动带 Bearer 鉴权。
 - 本地路径边界：拒绝 `log.output` 与 `tls.acme.data_directory`；`experimental.cache_file.path` 仅允许 `/var/lib/gosingbox`（及 `SINGBOX_GEO_DIR`）下的规范 `.db` 文件；`tls.certificate_path` / `tls.key_path` 仅允许位于 `/etc/gosingbox`、`/var/lib/gosingbox`、`/etc/ssl`、`/etc/letsencrypt`、`/etc/pki`、`/tls` 下的常规文件（允许目录树内部如 Let's Encrypt `live -> archive` 软链，拒绝越界软链）。
 
@@ -78,6 +78,6 @@ DNS、路由、出站、日志、有效原生字段及 `experimental` 其他配�
 
 运行期绑定端口、资源加载等失败后尝试恢复最近成功配置，其中包含已成功应用的增量用户变更。重建与回滚会中断已有连接；回滚不能恢复原 TCP 会话。若恢复也失败，错误明确包含 `core is offline`，健康检查报告离线，后续用户增量失败，必须用有效全量配置恢复。保留的配置快照表示最近成功状态，不代表内核仍在线。
 
-`GET /internal/get-config` 继续受原内部接口 token 鉴权，响应保持 JSON 配置本体，增加 `X-Config-Format: xray|singbox`。Xray 返回原有保存内容；原生返回保存的原生字段加当前用户快照，SS 空列表标记同步规范化。不会返回节点注入的管理密钥；这是可重新准备的配置视图，并非包含运行时注入值的完整 dump。此接口包含用户凭据和可能的内联私钥，仍只面向有权访问内部接口的管理者。
+`GET /internal/get-config` 继续受原内部接口 token 鉴权，响应保持 JSON 配置本体，增加 `X-Config-Format: xray|singbox`。Xray 返回原有保存内容；原生返回保存的原生字段加当前用户快照，SS2022 处于 0 用户单密码模式时会清理保存配置中的旧用户（原配置含 `users` 时置为 `[]`，省略 `users` 时保持省略）并移除 `managed` 标记。不会返回节点注入的管理密钥；这是可重新准备的配置视图，并非包含运行时注入值的完整 dump。此接口包含用户凭据和可能的内联私钥，仍只面向有权访问内部接口的管理者。
 
 测试见 `internal/nativeconfig/prepare_test.go` 和 `internal/controller/native_integration_test.go`；用户权限与会话撤销语义见[用户生命周期](user-lifecycle.md)。

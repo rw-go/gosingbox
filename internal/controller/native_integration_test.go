@@ -369,11 +369,37 @@ func TestNativeVLESSAndEmptySSWithLegacyFormatSwitch(t *testing.T) {
 	ssPort := testutil.Port(t)
 	key := base64.StdEncoding.EncodeToString([]byte("1234567890123456"))
 	password := base64.StdEncoding.EncodeToString([]byte("abcdefghijklmnop"))
+	dest := testutil.Echo(t)
+	dialSS128 := func(secret string) error {
+		rawConn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", ssPort), time.Second)
+		if err != nil {
+			return err
+		}
+		defer rawConn.Close()
+		_ = rawConn.SetDeadline(time.Now().Add(time.Second))
+		ss, err := shadowaead_2022.NewWithPassword("2022-blake3-aes-128-gcm", secret, nil)
+		if err != nil {
+			return err
+		}
+		sc, err := ss.DialConn(rawConn, M.ParseSocksaddr(dest))
+		if err != nil {
+			return err
+		}
+		defer sc.Close()
+		return testutil.Ping(sc)
+	}
 	cfg := cloneConfig(t, h.config)
-	cfg["inbounds"] = []any{map[string]any{"type": "vless", "tag": "vl", "listen": "127.0.0.1", "listen_port": h.port, "users": []any{map[string]any{"name": "1", "uuid": testutil.UUID1, "flow": ""}}}, map[string]any{"type": "shadowsocks", "tag": "ss", "listen": "127.0.0.1", "listen_port": ssPort, "method": "2022-blake3-aes-128-gcm", "password": key, "users": []any{}}}
+	cfg["inbounds"] = []any{
+		map[string]any{"type": "vless", "tag": "vl", "listen": "127.0.0.1", "listen_port": h.port, "users": []any{map[string]any{"name": "1", "uuid": testutil.UUID1, "flow": ""}}},
+		map[string]any{"type": "shadowsocks", "tag": "ss", "listen": "127.0.0.1", "listen_port": ssPort, "method": "2022-blake3-aes-128-gcm", "password": key, "users": []any{}},
+	}
 	h.start(cfg, "singbox", false, "")
+	// Initial 0-user native SS2022 runs in single-password PSK mode.
+	if err := dialSS128(key); err != nil {
+		t.Fatalf("0-user native SS2022 did not accept single-password PSK: %v", err)
+	}
 	// Native reconciliation omits unrelated protocol credentials, even when
-	// users of different protocols share a batch.
+	// users of different protocols share a batch, and promotes 0-user SS to EIH.
 	rec := h.call("POST", "/node/handler/add-users", map[string]any{"users": []any{
 		map[string]any{"userData": map[string]any{"userId": "1", "vlessUuid": testutil.UUID1}, "inboundData": []any{map[string]any{"type": "vless", "tag": "vl", "flow": ""}}},
 		map[string]any{"userData": map[string]any{"userId": "2", "ssPassword": "abcdefghijklmnop"}, "inboundData": []any{map[string]any{"type": "shadowsocks22", "tag": "ss"}}},
@@ -389,7 +415,6 @@ func TestNativeVLESSAndEmptySSWithLegacyFormatSwitch(t *testing.T) {
 	if snapshot["vl"].Users["1"].Flow != "" {
 		t.Fatal("native empty flow forced to Vision")
 	}
-	dest := testutil.Echo(t)
 	raw, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", h.port), time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -406,21 +431,11 @@ func TestNativeVLESSAndEmptySSWithLegacyFormatSwitch(t *testing.T) {
 	if err = testutil.Ping(vc); err != nil {
 		t.Fatal("native VLESS empty flow traffic", err)
 	}
-	rawSS, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", ssPort), time.Second)
-	if err != nil {
-		t.Fatal(err)
+	if err = dialSS128(key + ":" + password); err != nil {
+		t.Fatal("native empty SS not promoted to multi-user EIH", err)
 	}
-	defer rawSS.Close()
-	ss, err := shadowaead_2022.NewWithPassword("2022-blake3-aes-128-gcm", key+":"+password, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sc, err := ss.DialConn(rawSS, M.ParseSocksaddr(dest))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = testutil.Ping(sc); err != nil {
-		t.Fatal("native empty SS not hot updatable", err)
+	if err = dialSS128(key); err == nil {
+		t.Fatal("promoted native SS still accepted bare PSK")
 	}
 	view := h.call("GET", "/internal/get-config", nil)
 	var viewed map[string]any
@@ -452,8 +467,11 @@ func TestNativeVLESSAndEmptySSWithLegacyFormatSwitch(t *testing.T) {
 	}
 	h.start(cfg, "singbox", false, "")
 	snapshot, _ = h.state.Snapshot()
-	if h.state.Format() != contract.SingBoxConfig || len(snapshot["ss"].Users) != 0 {
-		t.Fatal("format switch retained legacy users")
+	if _, managed := snapshot["ss"]; h.state.Format() != contract.SingBoxConfig || managed {
+		t.Fatal("format switch retained legacy users on 0-user native SS")
+	}
+	if err = dialSS128(key); err != nil {
+		t.Fatalf("0-user native SS did not restore single-password PSK after format switch: %v", err)
 	}
 }
 

@@ -6,6 +6,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gofrs/uuid/v5"
 	"github.com/rwnode/rwnode-gosingbox/internal/asn"
 	"github.com/rwnode/rwnode-gosingbox/internal/contract"
 	"github.com/rwnode/rwnode-gosingbox/internal/nativeconfig"
@@ -143,12 +145,7 @@ func (a *App) StartConfig(raw []byte, format contract.ConfigFormat, force bool) 
 		if !contract.NativeConfigAvailable {
 			return fmt.Errorf("native config requires with_clash_api and with_v2ray_api build tags")
 		}
-		res, err := nativeconfig.Prepare(raw, nativeconfig.Management{
-			StatsAddress:    a.statsAddr,
-			ClashAddress:    a.clashAddr,
-			ClashSecret:     a.proc.ClashSecret(),
-			AllowedCertDirs: a.allowedCertDirs,
-		})
+		res, err := nativeconfig.Prepare(raw, a.management())
 		if err != nil {
 			return fmt.Errorf("prepare native config: %w", err)
 		}
@@ -180,6 +177,15 @@ func (a *App) StartConfig(raw []byte, format contract.ConfigFormat, force bool) 
 	return a.flushRevocations()
 }
 
+func (a *App) management() nativeconfig.Management {
+	return nativeconfig.Management{
+		StatsAddress:    a.statsAddr,
+		ClashAddress:    a.clashAddr,
+		ClashSecret:     a.proc.ClashSecret(),
+		AllowedCertDirs: a.allowedCertDirs,
+	}
+}
+
 // UpdateUsers serializes full authorization replacements with config changes.
 // Success means applied; no delayed timer can replay an older generation.
 func (a *App) UpdateUsers(updates []state.Update) error {
@@ -188,24 +194,114 @@ func (a *App) UpdateUsers(updates []state.Update) error {
 	if !a.state.HasConfig() {
 		return fmt.Errorf("no panel config available")
 	}
+	format := a.state.Format()
 	current, generation := a.state.Snapshot()
-	if a.state.Format() == contract.XrayConfig {
-		normalized := make([]state.Update, len(updates))
-		for i, update := range updates {
-			normalized[i] = update
-			normalized[i].Memberships = append([]state.Membership(nil), update.Memberships...)
-			for j, member := range normalized[i].Memberships {
-				if member.Protocol == "vless" {
+	candidate := current
+	var raw []byte
+	var seeded map[string]bool
+
+	normalized := make([]state.Update, len(updates))
+	needPromoteCheck := false
+	for i, update := range updates {
+		normalized[i] = update
+		normalized[i].Memberships = append([]state.Membership(nil), update.Memberships...)
+		for j, member := range normalized[i].Memberships {
+			switch member.Protocol {
+			case "vless":
+				if format == contract.XrayConfig {
 					normalized[i].Memberships[j].User.Flow = transpiler.NormalizeFlow(member.User.Flow)
+				}
+			case "shadowsocks22":
+				if member.Tag != "" {
+					if _, ok := current[member.Tag]; !ok {
+						needPromoteCheck = true
+					}
 				}
 			}
 		}
-		updates = normalized
 	}
-	next, err := current.Replace(updates)
+	updates = normalized
+
+	if needPromoteCheck {
+		raw = a.state.RawConfig()
+		var methods map[string]string
+		switch format {
+		case contract.XrayConfig:
+			methods = xraySS2022Methods(raw)
+		case contract.SingBoxConfig:
+			methods = nativeSS2022Methods(raw)
+		}
+		if len(methods) > 0 {
+			candidate = current.Clone()
+			seeded = map[string]bool{}
+			for _, update := range updates {
+				for _, member := range update.Memberships {
+					if member.Protocol != "shadowsocks22" || member.Tag == "" {
+						continue
+					}
+					if _, exists := candidate[member.Tag]; exists {
+						continue
+					}
+					if method, ok := methods[member.Tag]; ok {
+						candidate[member.Tag] = state.Inbound{
+							Protocol: "shadowsocks22",
+							Cipher:   method,
+							Users:    map[string]state.User{},
+						}
+						seeded[member.Tag] = true
+					}
+				}
+			}
+		}
+	}
+
+	next, err := candidate.Replace(updates)
 	if err != nil {
 		return err
 	}
+
+	ssModeChanged := false
+	for tag, ib := range next {
+		if ib.Protocol != "shadowsocks22" {
+			continue
+		}
+		if seeded[tag] {
+			if len(ib.Users) > 0 {
+				ssModeChanged = true
+			} else {
+				delete(next, tag)
+			}
+		} else if len(ib.Users) == 0 {
+			// Unified SS2022 password rule: demote 0-user SS2022 back to single-user PSK.
+			delete(next, tag)
+			ssModeChanged = true
+		}
+	}
+
+	if ssModeChanged {
+		if !a.proc.IsRunning() {
+			return fmt.Errorf("not running")
+		}
+		if err = validateSnapshotUsers(next); err != nil {
+			return err
+		}
+		if raw == nil {
+			raw = a.state.RawConfig()
+		}
+		prepared, err := a.rebuildConfig(raw, format, next)
+		if err != nil {
+			return err
+		}
+		if err = a.proc.ApplyConfigForFormat(prepared, format); err != nil {
+			return err
+		}
+		if err = a.state.CommitUsers(next, generation); err != nil {
+			return err
+		}
+		clear(a.pendingRevocations)
+		return nil
+	}
+
 	if err = a.proc.ApplyUsers(next); err != nil {
 		return err
 	}
@@ -214,6 +310,183 @@ func (a *App) UpdateUsers(updates []state.Update) error {
 	}
 	a.queueRevocations(current, next)
 	return a.flushRevocations()
+}
+
+func (a *App) rebuildConfig(raw []byte, format contract.ConfigFormat, next state.Snapshot) (map[string]any, error) {
+	switch format {
+	case contract.XrayConfig:
+		res, err := transpiler.Transpile(raw, a.statsAddr, a.clashAddr, a.logLevel, nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("transpile: %w", err)
+		}
+		next.WriteConfig(res.Config)
+		clearUnmanagedSSInbounds(res.Config, next)
+		if exp, ok := res.Config["experimental"].(map[string]any); ok {
+			if clash, ok := exp["clash_api"].(map[string]any); ok {
+				clash["secret"] = a.proc.ClashSecret()
+			}
+			if v2ray, ok := exp["v2ray_api"].(map[string]any); ok {
+				if stats, ok := v2ray["stats"].(map[string]any); ok {
+					stats["users"] = next.Names()
+				}
+			}
+		}
+		return res.Config, nil
+	case contract.SingBoxConfig:
+		if !contract.NativeConfigAvailable {
+			return nil, fmt.Errorf("native config requires with_clash_api and with_v2ray_api build tags")
+		}
+		cfg, err := nativeconfig.Decode(raw)
+		if err != nil {
+			return nil, fmt.Errorf("prepare native config: %w", err)
+		}
+		next.WriteConfig(cfg)
+		clearUnmanagedSSInbounds(cfg, next)
+		rebuiltRaw, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("marshal native config: %w", err)
+		}
+		prepared, err := nativeconfig.Prepare(rebuiltRaw, a.management())
+		if err != nil {
+			return nil, fmt.Errorf("prepare native config: %w", err)
+		}
+		if err = a.proc.ValidateConfig(prepared.Config); err != nil {
+			return nil, fmt.Errorf("validate native config: %w", err)
+		}
+		return prepared.Config, nil
+	default:
+		return nil, fmt.Errorf("unsupported config format: %q", format)
+	}
+}
+
+func clearUnmanagedSSInbounds(config map[string]any, snap state.Snapshot) {
+	inbounds, _ := config["inbounds"].([]any)
+	for _, value := range inbounds {
+		ib, ok := value.(map[string]any)
+		if !ok || ib["type"] != "shadowsocks" {
+			continue
+		}
+		tag, _ := ib["tag"].(string)
+		if _, managed := snap[tag]; !managed {
+			delete(ib, "users")
+			delete(ib, "managed")
+		}
+	}
+}
+
+// xraySS2022Methods extracts valid Shadowsocks 2022 inbound tag -> cipher
+// mappings from a saved Xray JSON config so 0-user single-password SS2022
+// inbounds can promote to MultiInbound on incremental add-user(s).
+func xraySS2022Methods(raw []byte) map[string]string {
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil
+	}
+	inbounds, _ := cfg["inbounds"].([]any)
+	methods := map[string]string{}
+	for _, ibAny := range inbounds {
+		ib, ok := ibAny.(map[string]any)
+		if !ok || ib["protocol"] != "shadowsocks" {
+			continue
+		}
+		settings, _ := ib["settings"].(map[string]any)
+		method, _ := settings["method"].(string)
+		minimum := 0
+		switch method {
+		case "2022-blake3-aes-128-gcm":
+			minimum = 16
+		case "2022-blake3-aes-256-gcm":
+			minimum = 32
+		default:
+			continue
+		}
+		password, _ := settings["password"].(string)
+		key, err := base64.StdEncoding.DecodeString(password)
+		if password == "" || err != nil || len(key) < minimum {
+			continue
+		}
+		tag, _ := ib["tag"].(string)
+		if tag == "" {
+			tag = "ss-in"
+		}
+		methods[tag] = method
+	}
+	return methods
+}
+
+// nativeSS2022Methods extracts valid Shadowsocks 2022 inbound tag -> cipher
+// mappings from a saved native sing-box JSON config so 0-user single-password
+// SS2022 inbounds can promote to MultiInbound on incremental add-user(s).
+func nativeSS2022Methods(raw []byte) map[string]string {
+	cfg, err := nativeconfig.Decode(raw)
+	if err != nil {
+		return nil
+	}
+	inbounds, _ := cfg["inbounds"].([]any)
+	methods := map[string]string{}
+	for _, ibAny := range inbounds {
+		ib, ok := ibAny.(map[string]any)
+		if !ok || ib["type"] != "shadowsocks" {
+			continue
+		}
+		tag, _ := ib["tag"].(string)
+		if tag == "" {
+			continue
+		}
+		if value, present := ib["managed"]; present {
+			if _, ok := value.(bool); !ok {
+				continue
+			}
+		}
+		if value, present := ib["destinations"]; present {
+			if list, ok := value.([]any); !ok || len(list) > 0 {
+				continue
+			}
+		}
+		method, _ := ib["method"].(string)
+		minimum := 0
+		switch method {
+		case "2022-blake3-aes-128-gcm":
+			minimum = 16
+		case "2022-blake3-aes-256-gcm":
+			minimum = 32
+		default:
+			continue
+		}
+		password, _ := ib["password"].(string)
+		key, err := base64.StdEncoding.DecodeString(password)
+		if password == "" || err != nil || len(key) < minimum {
+			continue
+		}
+		methods[tag] = method
+	}
+	return methods
+}
+
+// validateSnapshotUsers prevalidates VLESS UUIDs and SS2022 base64 user keys
+// (matching singbox.ValidateConfig / wireUsers) before mutating running state.
+func validateSnapshotUsers(snap state.Snapshot) error {
+	for _, tag := range snap.Tags() {
+		ib := snap[tag]
+		for _, u := range snap.OrderedUsers(tag) {
+			switch ib.Protocol {
+			case "vless":
+				if _, err := uuid.FromString(u.Credential); err != nil {
+					return fmt.Errorf("inbound %q: invalid VLESS UUID for user %q", tag, u.ID)
+				}
+			case "shadowsocks22":
+				key, err := base64.StdEncoding.DecodeString(u.Credential)
+				minimum := 32
+				if ib.Cipher == "2022-blake3-aes-128-gcm" {
+					minimum = 16
+				}
+				if err != nil || len(key) < minimum {
+					return fmt.Errorf("inbound %q: invalid SS2022 key for user %q", tag, u.ID)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (a *App) queueRevocations(current, next state.Snapshot) {
@@ -431,6 +704,20 @@ func (a *App) ConfigView() (contract.ConfigFormat, map[string]any) {
 	if format == contract.SingBoxConfig {
 		users, _ := a.state.Snapshot()
 		users.WriteConfig(config)
+		inbounds, _ := config["inbounds"].([]any)
+		for _, value := range inbounds {
+			ib, ok := value.(map[string]any)
+			if !ok || ib["type"] != "shadowsocks" {
+				continue
+			}
+			tag, _ := ib["tag"].(string)
+			if _, managed := users[tag]; !managed {
+				if _, hadUsers := ib["users"]; hadUsers {
+					ib["users"] = []any{}
+				}
+				delete(ib, "managed")
+			}
+		}
 	}
 	return format, config
 }

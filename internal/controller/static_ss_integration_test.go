@@ -66,15 +66,18 @@ func fixedSSPacketPing(port int, password string, destination net.Addr) error {
 
 func TestNativeFixedSSRelaysSurviveUserRevocationAndRestart(t *testing.T) {
 	h := newNativeHarness(t)
-	direct, relay, peer, managed := testutil.Port(t), testutil.Port(t), testutil.Port(t), testutil.Port(t)
+	direct, relay, peer, emptyUsers, panelManaged := testutil.Port(t), testutil.Port(t), testutil.Port(t), testutil.Port(t), testutil.Port(t)
 	key := func(value byte) string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{value}, 32)) }
 	fixed := func(tag string, port int, password string) map[string]any {
 		return map[string]any{"type": "shadowsocks", "tag": tag, "listen": "127.0.0.1", "listen_port": port, "method": "2022-blake3-aes-256-gcm", "password": password}
 	}
 	h.config["inbounds"] = append(h.config["inbounds"].([]any), fixed("ss-direct", direct, key(1)), fixed("ss-relay", relay, key(2)), fixed("ss-peer", peer, key(3)))
-	closed := fixed("ss-managed", managed, key(4))
-	closed["users"] = []any{}
-	h.config["inbounds"] = append(h.config["inbounds"].([]any), closed)
+	withEmptyUsers := fixed("ss-empty", emptyUsers, key(4))
+	withEmptyUsers["users"] = []any{}
+	withPanelManaged := fixed("ss-panel-zero", panelManaged, key(6))
+	withPanelManaged["users"] = []any{}
+	withPanelManaged["managed"] = true
+	h.config["inbounds"] = append(h.config["inbounds"].([]any), withEmptyUsers, withPanelManaged)
 	h.config["outbounds"] = append(h.config["outbounds"].([]any), map[string]any{"type": "shadowsocks", "tag": "to-peer", "server": "127.0.0.1", "server_port": peer, "method": "2022-blake3-aes-256-gcm", "password": key(3)})
 	h.config["route"].(map[string]any)["rules"] = []any{map[string]any{"inbound": []any{"ss-relay"}, "action": "route", "outbound": "to-peer"}}
 	h.start(h.config, "singbox", false, "")
@@ -94,26 +97,26 @@ func TestNativeFixedSSRelaysSurviveUserRevocationAndRestart(t *testing.T) {
 			_, _ = udp.WriteTo(data[:n], addr)
 		}
 	}()
-	checkFixed := func() {
+	checkPSK := func(port int, password string) {
 		t.Helper()
-		for _, entry := range []struct {
-			port     int
-			password string
-		}{{direct, key(1)}, {relay, key(2)}} {
-			if e := fixedSSPing(entry.port, entry.password, echo); e != nil {
-				t.Fatal("fixed TCP relay", e)
-			}
-			if e := fixedSSPacketPing(entry.port, entry.password, udp.LocalAddr()); e != nil {
-				t.Fatal("fixed UDP relay", e)
-			}
+		if e := fixedSSPing(port, password, echo); e != nil {
+			t.Fatalf("PSK TCP relay on port %d failed: %v", port, e)
+		}
+		if e := fixedSSPacketPing(port, password, udp.LocalAddr()); e != nil {
+			t.Fatalf("PSK UDP relay on port %d failed: %v", port, e)
 		}
 	}
-	checkFixed()
+	checkAllZeroUserPSK := func() {
+		t.Helper()
+		checkPSK(direct, key(1))
+		checkPSK(relay, key(2))
+		checkPSK(emptyUsers, key(4))
+		checkPSK(panelManaged, key(6))
+	}
+	// 1. All 0-user SS2022 shapes (users omitted, users=[], users=[]+managed=true) accept PSK over TCP & UDP.
+	checkAllZeroUserPSK()
 	if fixedSSPing(direct, key(9), echo) == nil {
 		t.Fatal("wrong fixed PSK was accepted")
-	}
-	if fixedSSPing(managed, key(4), echo) == nil {
-		t.Fatal("empty managed server accepted its master password")
 	}
 	counters, err := h.app.QueryUserCounters(context.Background(), false)
 	if err != nil {
@@ -121,42 +124,55 @@ func TestNativeFixedSSRelaysSurviveUserRevocationAndRestart(t *testing.T) {
 	}
 	for _, c := range counters {
 		if c.Value != 0 {
-			t.Fatal("fixed relay traffic charged to a panel user")
+			t.Fatal("0-user PSK relay traffic charged to a panel user")
 		}
 	}
+
+	// 2. Incremental 0 -> >0 promotion switches ss-empty & ss-panel-zero to multi-user EIH (bare PSK rejected).
 	if err = h.app.UpdateUsers([]state.Update{{ID: "1", Memberships: []state.Membership{
 		{Tag: "any", Protocol: "anytls", User: state.User{ID: "1", Credential: testutil.UUID1}},
-		{Tag: "ss-managed", Protocol: "shadowsocks22", User: state.User{ID: "1", Credential: key(5)}},
+		{Tag: "ss-empty", Protocol: "shadowsocks22", User: state.User{ID: "1", Credential: key(5)}},
+		{Tag: "ss-panel-zero", Protocol: "shadowsocks22", User: state.User{ID: "1", Credential: key(7)}},
 	}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err = fixedSSPing(managed, key(4)+":"+key(5), echo); err != nil {
-		t.Fatal("managed user authentication", err)
+	checkPSK(emptyUsers, key(4)+":"+key(5))
+	checkPSK(panelManaged, key(6)+":"+key(7))
+	if fixedSSPing(emptyUsers, key(4), echo) == nil || fixedSSPing(panelManaged, key(6), echo) == nil {
+		t.Fatal("multi-user EIH inbound accepted bare server PSK")
 	}
+	checkPSK(direct, key(1))
+	checkPSK(relay, key(2))
+
+	// 3. Incremental >0 -> 0 demotion revokes EIH and immediately restores single-user PSK relay mode.
 	if err = h.app.UpdateUsers([]state.Update{{ID: "1"}, {ID: "2"}}); err != nil {
 		t.Fatal(err)
 	}
-	checkFixed()
-	if fixedSSPing(managed, key(4), echo) == nil {
-		t.Fatal("revoking users enabled fixed-password fallback")
+	if fixedSSPing(emptyUsers, key(4)+":"+key(5), echo) == nil || fixedSSPing(panelManaged, key(6)+":"+key(7), echo) == nil {
+		t.Fatal("revoked EIH user still accepted after >0 -> 0 demotion")
 	}
-	counts, err := h.app.Query(context.Background(), []string{"inbound>>>ss-relay>>>", "inbound>>>ss-peer>>>"}, false)
+	checkAllZeroUserPSK()
+
+	counts, err := h.app.Query(context.Background(), []string{
+		"inbound>>>ss-relay>>>", "inbound>>>ss-peer>>>", "inbound>>>ss-empty>>>", "inbound>>>ss-panel-zero>>>",
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seen := map[string]bool{}
 	for _, c := range counts {
 		if c.Value > 0 {
-			for _, tag := range []string{"ss-relay", "ss-peer"} {
+			for _, tag := range []string{"ss-relay", "ss-peer", "ss-empty", "ss-panel-zero"} {
 				if strings.HasPrefix(c.Name, "inbound>>>"+tag+">>>") {
 					seen[tag] = true
 				}
 			}
 		}
 	}
-	if len(seen) != 2 {
-		t.Fatal("relay route or node traffic counters missing")
+	if len(seen) != 4 {
+		t.Fatalf("relay route or node traffic counters missing: seen=%v", seen)
 	}
+
 	view := h.call("GET", "/internal/get-config", nil)
 	var current map[string]any
 	if err = json.Unmarshal(view.Body.Bytes(), &current); err != nil {
@@ -164,15 +180,22 @@ func TestNativeFixedSSRelaysSurviveUserRevocationAndRestart(t *testing.T) {
 	}
 	for _, v := range current["inbounds"].([]any) {
 		ib := v.(map[string]any)
-		if strings.HasPrefix(ib["tag"].(string), "ss-") && ib["tag"] != "ss-managed" {
+		tag := ib["tag"].(string)
+		if _, hasManaged := ib["managed"]; hasManaged {
+			t.Fatalf("0-user SS inbound %q leaked managed flag in get-config", tag)
+		}
+		switch tag {
+		case "ss-direct", "ss-relay", "ss-peer":
 			if _, present := ib["users"]; present {
-				t.Fatal("user mutation changed fixed relay mode")
+				t.Fatalf("user mutation added users to omitted-users SS inbound %q", tag)
+			}
+		case "ss-empty", "ss-panel-zero":
+			uList, ok := ib["users"].([]any)
+			if !ok || len(uList) != 0 {
+				t.Fatalf("demoted SS inbound %q did not normalize users to []: %#v", tag, ib["users"])
 			}
 		}
 	}
 	h.start(current, "singbox", true, "")
-	checkFixed()
-	if fixedSSPing(managed, key(4), echo) == nil {
-		t.Fatal("restart enabled master-password fallback")
-	}
+	checkAllZeroUserPSK()
 }

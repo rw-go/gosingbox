@@ -436,9 +436,10 @@ func parseDest(dest, fallbackServer string) (string, int) {
 	return trimmed, 443
 }
 
-// mapShadowsocksInbound maps an Xray SS inbound to sing-box, single-password
-// or multi-user (clients). When useDesired is true, ssUsers is authoritative
-// (multi-user, may be empty meaning "no users").
+// mapShadowsocksInbound maps an Xray SS inbound to sing-box: single-password
+// PSK when clients is empty (and useDesired is false), or multi-user EIH when
+// clients is non-empty. When useDesired is true, ssUsers is authoritative
+// (multi-user, may be empty with managed=true meaning "no users").
 func mapShadowsocksInbound(ib map[string]any, ssUsers []SsUser, useDesired bool) map[string]any {
 	settings, _ := ib["settings"].(map[string]any)
 	method, _ := settings["method"].(string)
@@ -528,7 +529,7 @@ func mapShadowsocksInbound(ib map[string]any, ssUsers []SsUser, useDesired bool)
 		}
 	}
 
-	if _, managed := settings["clients"]; managed || useDesired {
+	if useDesired {
 		if password == "" {
 			return nil
 		}

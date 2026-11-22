@@ -163,26 +163,82 @@ func TestManagementRequiresLocalDistinctListenersAndSecret(t *testing.T) {
 }
 func TestEmptyManagedSSAndNativeVlessFlow(t *testing.T) {
 	key := base64.StdEncoding.EncodeToString([]byte("1234567890123456"))
-	c := map[string]any{"inbounds": []any{map[string]any{"type": "shadowsocks", "tag": "ss", "method": "2022-blake3-aes-128-gcm", "password": key, "users": []any{}}, map[string]any{"type": "vless", "tag": "vl", "users": []any{map[string]any{"name": "1", "uuid": testutil.UUID1, "flow": ""}}}, map[string]any{"type": "direct", "tag": "aux", "listen": "::1"}}}
-	p, err := prepare(t, c, management)
+	userKey := base64.StdEncoding.EncodeToString([]byte("abcdefghijklmnop"))
+
+	// Unified SS2022 rule: 0-user SS2022 (users omitted, users=[], or users=[]+managed=true)
+	// always normalizes to single-user PSK (omitting both users and managed).
+	for _, variant := range []struct {
+		name   string
+		mutate func(ss map[string]any)
+	}{
+		{"users-omitted", func(ss map[string]any) {}},
+		{"users-empty", func(ss map[string]any) { ss["users"] = []any{} }},
+		{"users-empty-managed-true", func(ss map[string]any) { ss["users"] = []any{}; ss["managed"] = true }},
+		{"managed-true-without-users", func(ss map[string]any) { ss["managed"] = true }},
+	} {
+		t.Run(variant.name, func(t *testing.T) {
+			ss := map[string]any{"type": "shadowsocks", "tag": "ss", "method": "2022-blake3-aes-128-gcm", "password": key}
+			variant.mutate(ss)
+			c := map[string]any{"inbounds": []any{
+				ss,
+				map[string]any{"type": "vless", "tag": "vl", "users": []any{map[string]any{"name": "1", "uuid": testutil.UUID1, "flow": ""}}},
+				map[string]any{"type": "direct", "tag": "aux", "listen": "::1"},
+			}}
+			p, err := prepare(t, c, management)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ssOut := first(p.Config)
+			if _, hasUsers := ssOut["users"]; hasUsers {
+				t.Fatalf("0-user SS kept users field: %#v", ssOut["users"])
+			}
+			if _, hasManaged := ssOut["managed"]; hasManaged {
+				t.Fatalf("0-user SS kept managed field: %#v", ssOut["managed"])
+			}
+			if len(p.Users) != 1 || p.Users["vl"].Users["1"].Flow != "" {
+				t.Fatalf("unexpected managed snapshot: %#v", p.Users)
+			}
+			stats := p.Config["experimental"].(map[string]any)["v2ray_api"].(map[string]any)["stats"].(map[string]any)
+			if !reflect.DeepEqual(stats["inbounds"], []string{"vl", "ss"}) {
+				t.Fatalf("unexpected stats.inbounds: %#v", stats["inbounds"])
+			}
+			if !reflect.DeepEqual(stats["users"], []string{"1"}) {
+				t.Fatalf("unexpected stats.users: %#v", stats["users"])
+			}
+		})
+	}
+
+	// A native config whose only non-direct inbound is a 0-user SS2022 relay (like hk1sb)
+	// must be accepted and tracked in stats.inbounds with empty stats.users.
+	ssOnly := map[string]any{"inbounds": []any{
+		map[string]any{"type": "shadowsocks", "tag": "ss-only", "method": "2022-blake3-aes-128-gcm", "password": key, "users": []any{}, "managed": true},
+		map[string]any{"type": "direct", "tag": "aux", "listen": "127.0.0.1"},
+	}}
+	pOnly, err := prepare(t, ssOnly, management)
+	if err != nil {
+		t.Fatalf("0-user SS-only native config rejected: %v", err)
+	}
+	if len(pOnly.Users) != 0 {
+		t.Fatalf("expected 0 managed inbounds for 0-user SS-only config, got %#v", pOnly.Users)
+	}
+	onlyStats := pOnly.Config["experimental"].(map[string]any)["v2ray_api"].(map[string]any)["stats"].(map[string]any)
+	if !reflect.DeepEqual(onlyStats["inbounds"], []string{"ss-only"}) || !reflect.DeepEqual(onlyStats["users"], []string{}) {
+		t.Fatalf("unexpected SS-only stats: inbounds=%#v users=%#v", onlyStats["inbounds"], onlyStats["users"])
+	}
+
+	// Non-empty users (>0) strips managed=true and runs multi-user EIH.
+	cMulti := map[string]any{"inbounds": []any{
+		map[string]any{"type": "shadowsocks", "tag": "ss", "method": "2022-blake3-aes-128-gcm", "password": key, "managed": true, "users": []any{map[string]any{"name": "1", "password": userKey}}},
+	}}
+	pMulti, err := prepare(t, cMulti, management)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first(p.Config)["managed"] != true || len(p.Users) != 2 || p.Users["vl"].Users["1"].Flow != "" {
-		t.Fatal("empty SS or flow changed")
-	}
-	first(c)["managed"] = true
-	first(c)["users"] = []any{map[string]any{"name": "1", "password": key}}
-	p, err = prepare(t, c, management)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := first(p.Config)["managed"]; ok {
+	if _, ok := first(pMulti.Config)["managed"]; ok {
 		t.Fatal("managed flag retained with nonempty SS")
 	}
-	delete(first(c), "users")
-	if _, err = prepare(t, c, management); err == nil {
-		t.Fatal("accepted shared PSK SS")
+	if len(pMulti.Users["ss"].Users) != 1 || pMulti.Users["ss"].Users["1"].Credential != userKey {
+		t.Fatalf("unexpected multi-user SS snapshot: %#v", pMulti.Users["ss"])
 	}
 }
 
@@ -218,13 +274,14 @@ func TestFixedPasswordSSIsAuxiliaryButCountedInNodeTraffic(t *testing.T) {
 	if !reflect.DeepEqual(stats["outbounds"], []string{"direct"}) {
 		t.Fatalf("implicit direct outbound was not accounted: %#v", stats["outbounds"])
 	}
-	ss["managed"] = true
-	if _, err = prepare(t, c, management); err == nil || !strings.Contains(err.Error(), "explicit users") {
-		t.Fatal("managed mode without users accepted")
-	}
 	ss["managed"] = "false"
-	if _, err = prepare(t, c, management); err == nil {
-		t.Fatal("invalid mode accepted")
+	if _, err = prepare(t, c, management); err == nil || !strings.Contains(err.Error(), "boolean") {
+		t.Fatal("invalid managed type accepted")
+	}
+	ss["managed"] = true
+	ss["users"] = "bad"
+	if _, err = prepare(t, c, management); err == nil || !strings.Contains(err.Error(), "array") {
+		t.Fatal("invalid users type accepted")
 	}
 }
 func TestTLSCertificateFilesAreCheckedBeforeApply(t *testing.T) {
