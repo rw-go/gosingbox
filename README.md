@@ -7,7 +7,7 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 > 原生模式支持 **AnyTLS（普通 TLS）**、**TCP VLESS（保留 TLS/Reality 和 flow）**、
 > **SS2022 AES-128/256-GCM 多用户**；Xray 输入继续沿用原有转译行为。
 
-当前发布版本 **3.4.1.24**，内嵌 sing-box **1.14.3**，Panel 上报 `nodeVersion=3.4.1`。
+当前发布版本 **3.4.1.25**，内嵌 sing-box **1.14.3**，Panel 上报 `nodeVersion=3.4.1`。
 原生集成包含 [节点能力扩展 v1](docs/node-capabilities.md)、
 [按入站管理用户及 AnyTLS 生命周期](docs/user-lifecycle.md) 和
 [原生配置入口](docs/native-config.md)。已与配套修改版 Panel 完成原生 Profile、权限、
@@ -15,7 +15,7 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 原生配置需要支持该扩展的 Panel；仅升级节点不会给官方 Panel 增加配置编辑能力。
 
 发布渠道覆盖 **Docker Hub、Bitbucket 与 GitHub**。请使用下方一键安装入口或镜像
-`rwnode/gosingbox:3.4.1.24`。版本演进与兼容边界见 [3.4.1.24 发布说明](docs/releases/3.4.1.24.md)。
+`rwnode/gosingbox:3.4.1.25`。版本演进与兼容边界见 [3.4.1.25 发布说明](docs/releases/3.4.1.25.md)。
 
 ## 特性
 
@@ -66,7 +66,7 @@ Alpine 用 OpenRC，Debian/Ubuntu/Arch 等用 systemd。
 ## Docker 安装（推荐用于通用 Linux）
 
 Docker 版使用单进程 Alpine 镜像（内嵌 sing-box，不包含 Node.js、Xray 或 s6），默认镜像：
-`rwnode/gosingbox:latest`。生产部署可固定为 `rwnode/gosingbox:3.4.1.24`。
+`rwnode/gosingbox:latest`。生产部署可固定为 `rwnode/gosingbox:3.4.1.25`。
 
 一键安装（从 GitHub）：
 

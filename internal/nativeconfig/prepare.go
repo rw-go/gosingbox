@@ -18,8 +18,13 @@ import (
 )
 
 var (
-	defaultCacheDirs = []string{"/var/lib/gosingbox"}
-	defaultCertDirs  = []string{
+	defaultCacheDirs        = []string{"/var/lib/gosingbox"}
+	defaultProviderDataDirs = []string{
+		"/var/lib/gosingbox",
+		"/etc/gosingbox",
+		"/tls",
+	}
+	defaultCertDirs = []string{
 		"/etc/gosingbox",
 		"/var/lib/gosingbox",
 		"/etc/ssl",
@@ -79,6 +84,11 @@ func Prepare(raw []byte, management Management) (*Prepared, error) {
 		if out, hasOutput := logCfg["output"]; hasOutput && out != nil && out != "" {
 			return nil, fmt.Errorf("native log.output is not managed by this node")
 		}
+	}
+	providerDirs := management.providerDataDirs()
+	providerTags, err := validateCertificateProviders(config, providerDirs)
+	if err != nil {
+		return nil, err
 	}
 	seen := map[string]bool{}
 	hasPrimaryInbound := false
@@ -169,9 +179,19 @@ func Prepare(raw []byte, management Management) (*Prepared, error) {
 		if _, ok := users.([]any); !ok {
 			return nil, fmt.Errorf("inbound %q: users must be an array", tag)
 		}
-		if options, ok := inbound["tls"].(map[string]any); ok && options["enabled"] == true {
-			if err := checkCertificate(options, management.certDirs()); err != nil {
-				return nil, fmt.Errorf("inbound %q: %w", tag, err)
+		if rawTLS, hasTLS := inbound["tls"]; hasTLS && rawTLS != nil {
+			options, ok := rawTLS.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("inbound %q: tls must be an object", tag)
+			}
+			if options["enabled"] == true {
+				if err := checkCertificate(options, management.certDirs(), providerDirs, providerTags); err != nil {
+					return nil, fmt.Errorf("inbound %q: %w", tag, err)
+				}
+			} else if rawProvider, hasProvider := options["certificate_provider"]; hasProvider && rawProvider != nil {
+				if err := validateCertificateProviderRef(rawProvider, providerTags, providerDirs); err != nil {
+					return nil, fmt.Errorf("inbound %q: %w", tag, err)
+				}
 			}
 		}
 	}
@@ -375,6 +395,12 @@ func (m Management) certDirs() []string {
 	return dirs
 }
 
+func (m Management) providerDataDirs() []string {
+	dirs := append([]string(nil), defaultProviderDataDirs...)
+	dirs = append(dirs, m.AllowedCertDirs...)
+	return dirs
+}
+
 func hasAllowedPrefix(path string, dirs []string) bool {
 	for _, rawDir := range dirs {
 		dir := filepath.Clean(rawDir)
@@ -401,6 +427,11 @@ func resolveWithExistingAncestor(path string) (string, error) {
 		}
 		if !os.IsNotExist(err) {
 			return "", err
+		}
+		if _, lerr := os.Lstat(cur); lerr == nil {
+			return "", fmt.Errorf("dangling symlink %q", cur)
+		} else if !os.IsNotExist(lerr) {
+			return "", lerr
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
@@ -457,24 +488,142 @@ func validateCacheFilePath(path string, allowed []string) error {
 	return nil
 }
 
-func checkCertificate(options map[string]any, certDirs []string) error {
-	if reality, ok := options["reality"].(map[string]any); ok && reality["enabled"] == true {
+func validateCertificateProviders(config map[string]any, providerDirs []string) (map[string]bool, error) {
+	tags := map[string]bool{}
+	rawProviders, present := config["certificate_providers"]
+	if !present {
+		return tags, nil
+	}
+	list, ok := rawProviders.([]any)
+	if !ok {
+		return nil, fmt.Errorf("native certificate_providers must be an array")
+	}
+	for i, item := range list {
+		provider, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("certificate_providers[%d] must be an object", i)
+		}
+		tag, ok := provider["tag"].(string)
+		if !ok || tag == "" {
+			return nil, fmt.Errorf("certificate_providers[%d]: tag must be nonempty", i)
+		}
+		if tags[tag] {
+			return nil, fmt.Errorf("duplicate certificate provider tag %q", tag)
+		}
+		if err := validateCertificateProviderObject(provider, fmt.Sprintf("certificate_provider %q", tag), providerDirs); err != nil {
+			return nil, err
+		}
+		tags[tag] = true
+	}
+	return tags, nil
+}
+
+func validateCertificateProviderRef(raw any, providerTags map[string]bool, providerDirs []string) error {
+	switch value := raw.(type) {
+	case string:
+		if value == "" {
+			return fmt.Errorf("TLS certificate_provider tag must be nonempty")
+		}
+		if !providerTags[value] {
+			return fmt.Errorf("TLS certificate_provider references unknown provider %q", value)
+		}
+		return nil
+	case map[string]any:
+		if _, hasTag := value["tag"]; hasTag {
+			return fmt.Errorf("inline TLS certificate_provider must not specify tag")
+		}
+		return validateCertificateProviderObject(value, "TLS certificate_provider", providerDirs)
+	default:
+		return fmt.Errorf("TLS certificate_provider must be a tag string or provider object")
+	}
+}
+
+func validateCertificateProviderObject(provider map[string]any, scope string, providerDirs []string) error {
+	kind, ok := provider["type"].(string)
+	if !ok || kind == "" {
+		return fmt.Errorf("%s: type must be nonempty", scope)
+	}
+	switch kind {
+	case "acme", "cloudflare-origin-ca":
+		if rawDir, present := provider["data_directory"]; present && rawDir != nil {
+			if err := validateProviderDataDirectory(rawDir, scope+" data_directory", providerDirs); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("%s: provider type %q is not managed by this node", scope, kind)
+	}
+}
+
+func validateProviderDataDirectory(rawDir any, field string, allowed []string) error {
+	dir, ok := rawDir.(string)
+	if !ok {
+		return fmt.Errorf("%s must be a string", field)
+	}
+	if dir == "" {
 		return nil
 	}
-	// Match the core's provider precedence. Provider lifecycle and references
-	// require an actual instance and remain subject to startup/rollback handling.
-	if acmeRaw, hasAcme := options["acme"]; hasAcme && acmeRaw != nil {
-		acme, ok := acmeRaw.(map[string]any)
+	if strings.Contains(dir, "$") {
+		return fmt.Errorf("%s must not contain environment variable expansions", field)
+	}
+	if !filepath.IsAbs(dir) || dir != filepath.Clean(dir) || dir == "/" {
+		return fmt.Errorf("%s must be a clean absolute path", field)
+	}
+	dirs := resolvedAllowedDirs(allowed)
+	if !hasAllowedPrefix(dir, dirs) {
+		return fmt.Errorf("%s is outside allowed certificate provider directories", field)
+	}
+	realDir, err := resolveWithExistingAncestor(dir)
+	if err != nil || !hasAllowedPrefix(realDir, dirs) {
+		return fmt.Errorf("%s resolves outside allowed certificate provider directories", field)
+	}
+	if info, err := os.Lstat(dir); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			targetInfo, serr := os.Stat(realDir)
+			if serr != nil || !targetInfo.IsDir() {
+				return fmt.Errorf("%s must reference a directory", field)
+			}
+		} else if !info.IsDir() {
+			return fmt.Errorf("%s must reference a directory", field)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("invalid %s", field)
+	}
+	return nil
+}
+
+func checkCertificate(options map[string]any, certDirs, providerDirs []string, providerTags map[string]bool) error {
+	hasAcme := options["acme"] != nil
+	hasProvider := options["certificate_provider"] != nil
+	if reality, ok := options["reality"].(map[string]any); ok && reality["enabled"] == true {
+		if hasProvider {
+			return fmt.Errorf("TLS reality cannot use certificate_provider")
+		}
+		if hasAcme {
+			return fmt.Errorf("TLS reality cannot use acme")
+		}
+		return nil
+	}
+	if hasAcme && hasProvider {
+		return fmt.Errorf("TLS certificate_provider and acme are mutually exclusive")
+	}
+	// Match the core's provider precedence while enforcing F-04 path confinement
+	// across top-level certificate_providers, inline certificate_provider, and acme.
+	if hasAcme {
+		acme, ok := options["acme"].(map[string]any)
 		if !ok {
 			return fmt.Errorf("TLS acme must be an object")
 		}
-		if dir, hasDir := acme["data_directory"]; hasDir && dir != nil && dir != "" {
-			return fmt.Errorf("TLS acme.data_directory is not managed by this node")
+		if rawDir, hasDir := acme["data_directory"]; hasDir && rawDir != nil {
+			if err := validateProviderDataDirectory(rawDir, "TLS acme.data_directory", providerDirs); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
-	if options["certificate_provider"] != nil {
-		return nil
+	if hasProvider {
+		return validateCertificateProviderRef(options["certificate_provider"], providerTags, providerDirs)
 	}
 	cert, certPresent, err := readPEM(options, "certificate", certDirs)
 	if err != nil {

@@ -42,6 +42,15 @@ func TestCapabilitiesReportOnlyImplementedPaths(t *testing.T) {
 	if caps.StaticShadowsocks2022 != contract.NativeConfigAvailable {
 		t.Fatal("fixed-password SS2022 capability does not match native support")
 	}
+	if caps.DynamicShadowsocks2022 != contract.NativeConfigAvailable {
+		t.Fatal("dynamic SS2022 capability does not match native support")
+	}
+	if caps.AnyTLSSharedListener != contract.NativeConfigAvailable {
+		t.Fatal("shared AnyTLS listener capability does not match native support")
+	}
+	if strings.Contains(rec.Body.String(), `"dynamicShadowsocks2022":true`) != contract.NativeConfigAvailable {
+		t.Fatalf("unexpected dynamicShadowsocks2022 JSON serialization: %s", rec.Body.String())
+	}
 	if rec.Code != http.StatusOK || caps.ContractVersion != 1 || caps.RuntimeCore != "singbox" {
 		t.Fatalf("unexpected capabilities: %s", rec.Body.String())
 	}

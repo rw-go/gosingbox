@@ -396,3 +396,318 @@ func TestOutboundStatsAndClashExternalUISanitization(t *testing.T) {
 		t.Fatalf("unexpected untagged stats.outbounds: %#v", uStats["outbounds"])
 	}
 }
+
+func TestCertificateProviderStorageConfinement(t *testing.T) {
+	managedRoot := t.TempDir()
+	outsideRoot := t.TempDir()
+	existingManagedSubdir := filepath.Join(managedRoot, "existing-acme")
+	intraTargetDir := filepath.Join(managedRoot, "real-store")
+	intraSymlinkDir := filepath.Join(managedRoot, "linked-store")
+	escapeSymlinkDir := filepath.Join(managedRoot, "escape-link")
+	danglingSymlinkDir := filepath.Join(managedRoot, "dangling-link")
+	regularFile := filepath.Join(managedRoot, "not-a-dir.txt")
+
+	for _, dir := range []string{existingManagedSubdir, intraTargetDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(intraTargetDir, intraSymlinkDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideRoot, escapeSymlinkDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outsideRoot, "nonexistent-target"), danglingSymlinkDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(regularFile, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := management
+	m.AllowedCertDirs = []string{managedRoot}
+
+	providerTLSConfig := func(topProviders any, certProvider any) map[string]any {
+		c := config(t)
+		tlsCfg := map[string]any{
+			"enabled":              true,
+			"server_name":          "node.example.test",
+			"certificate_provider": certProvider,
+		}
+		first(c)["tls"] = tlsCfg
+		if topProviders != nil {
+			c["certificate_providers"] = topProviders
+		}
+		return c
+	}
+
+	// Valid top-level certificate_providers + string reference, inline provider, and default managed dirs.
+	validCases := []struct {
+		name string
+		cfg  map[string]any
+	}{
+		{
+			name: "top-level-acme-default-var-lib",
+			cfg: providerTLSConfig(
+				[]any{map[string]any{"type": "acme", "tag": "shared-acme", "domain": []any{"node.example.test"}, "data_directory": "/var/lib/gosingbox/acme"}},
+				"shared-acme",
+			),
+		},
+		{
+			name: "top-level-originca-etc-gosingbox-and-tls",
+			cfg: providerTLSConfig(
+				[]any{
+					map[string]any{"type": "cloudflare-origin-ca", "tag": "cf-ca", "domain": []any{"node.example.test"}, "origin_ca_key": "v1.0-test", "data_directory": "/etc/gosingbox/originca"},
+					map[string]any{"type": "acme", "tag": "tls-vol", "domain": []any{"node.example.test"}, "data_directory": "/tls/acme"},
+				},
+				"cf-ca",
+			),
+		},
+		{
+			name: "top-level-acme-omitted-and-empty-data-dir",
+			cfg: providerTLSConfig(
+				[]any{
+					map[string]any{"type": "acme", "tag": "acme-omitted", "domain": []any{"node.example.test"}},
+					map[string]any{"type": "acme", "tag": "acme-empty", "domain": []any{"node.example.test"}, "data_directory": ""},
+				},
+				"acme-omitted",
+			),
+		},
+		{
+			name: "inline-acme-existing-and-new-managed-subdir",
+			cfg: providerTLSConfig(
+				[]any{},
+				map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": filepath.Join(existingManagedSubdir, "nested")},
+			),
+		},
+		{
+			name: "inline-originca-intra-tree-symlink-dir",
+			cfg: providerTLSConfig(
+				nil,
+				map[string]any{"type": "cloudflare-origin-ca", "domain": []any{"node.example.test"}, "api_token": "tok", "data_directory": filepath.Join(intraSymlinkDir, "certs")},
+			),
+		},
+		{
+			name: "legacy-tls-acme-managed-dir",
+			cfg: func() map[string]any {
+				c := config(t)
+				first(c)["tls"] = map[string]any{
+					"enabled": true,
+					"acme":    map[string]any{"domain": []any{"node.example.test"}, "data_directory": "/var/lib/gosingbox/acme-legacy"},
+				}
+				return c
+			}(),
+		},
+	}
+	for _, tc := range validCases {
+		t.Run("accept-"+tc.name, func(t *testing.T) {
+			if _, err := prepare(t, tc.cfg, m); err != nil {
+				t.Fatalf("unexpected rejection for %s: %v", tc.name, err)
+			}
+		})
+	}
+
+	// Reject malformed structures, unmanaged provider types, read-only system CA dirs, and escaping paths/symlinks.
+	rejectCases := []struct {
+		name string
+		want string
+		cfg  map[string]any
+	}{
+		{
+			name: "top-level-not-array",
+			want: "certificate_providers must be an array",
+			cfg: func() map[string]any {
+				c := config(t)
+				c["certificate_providers"] = map[string]any{}
+				return c
+			}(),
+		},
+		{
+			name: "top-level-null",
+			want: "certificate_providers must be an array",
+			cfg: func() map[string]any {
+				c := config(t)
+				c["certificate_providers"] = nil
+				return c
+			}(),
+		},
+		{
+			name: "top-level-missing-tag",
+			want: "tag must be nonempty",
+			cfg: providerTLSConfig(
+				[]any{map[string]any{"type": "acme", "domain": []any{"node.example.test"}}},
+				"shared-acme",
+			),
+		},
+		{
+			name: "top-level-duplicate-tag",
+			want: "duplicate certificate provider tag",
+			cfg: providerTLSConfig(
+				[]any{
+					map[string]any{"type": "acme", "tag": "dup", "domain": []any{"a.example.test"}},
+					map[string]any{"type": "acme", "tag": "dup", "domain": []any{"b.example.test"}},
+				},
+				"dup",
+			),
+		},
+		{
+			name: "unknown-provider-tag-without-top-level",
+			want: "unknown provider",
+			cfg:  providerTLSConfig(nil, "missing-provider"),
+		},
+		{
+			name: "unknown-provider-tag-with-top-level",
+			want: "unknown provider",
+			cfg: providerTLSConfig(
+				[]any{map[string]any{"type": "acme", "tag": "declared", "domain": []any{"node.example.test"}}},
+				"other",
+			),
+		},
+		{
+			name: "empty-provider-tag",
+			want: "tag must be nonempty",
+			cfg:  providerTLSConfig(nil, ""),
+		},
+		{
+			name: "invalid-provider-ref-type",
+			want: "tag string or provider object",
+			cfg:  providerTLSConfig(nil, 42),
+		},
+		{
+			name: "inline-provider-with-tag",
+			want: "must not specify tag",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "tag": "bad-inline", "domain": []any{"node.example.test"}}),
+		},
+		{
+			name: "top-level-tailscale-unmanaged",
+			want: "not managed",
+			cfg: providerTLSConfig(
+				[]any{map[string]any{"type": "tailscale", "tag": "ts", "endpoint": "ts-ep"}},
+				"ts",
+			),
+		},
+		{
+			name: "inline-tailscale-unmanaged",
+			want: "not managed",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "tailscale", "endpoint": "ts-ep"}),
+		},
+		{
+			name: "inline-unknown-type",
+			want: "not managed",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "custom-fs", "data_directory": "/var/lib/gosingbox/acme"}),
+		},
+		{
+			name: "etc-ssl-rejected-for-writable-provider-dir",
+			want: "outside allowed certificate provider directories",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": "/etc/ssl/acme"}),
+		},
+		{
+			name: "etc-pki-rejected-for-writable-provider-dir",
+			want: "outside allowed certificate provider directories",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": "/etc/pki/acme"}),
+		},
+		{
+			name: "etc-letsencrypt-rejected-for-writable-provider-dir",
+			want: "outside allowed certificate provider directories",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": "/etc/letsencrypt/acme"}),
+		},
+		{
+			name: "outside-temp-dir",
+			want: "outside allowed certificate provider directories",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": filepath.Join(outsideRoot, "acme")}),
+		},
+		{
+			name: "unreferenced-top-level-outside-dir-still-rejected",
+			want: "outside allowed certificate provider directories",
+			cfg: func() map[string]any {
+				c := config(t)
+				c["certificate_providers"] = []any{
+					map[string]any{"type": "acme", "tag": "unused", "domain": []any{"node.example.test"}, "data_directory": filepath.Join(outsideRoot, "unused")},
+				}
+				return c
+			}(),
+		},
+		{
+			name: "relative-data-dir",
+			want: "clean absolute path",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": "relative/acme"}),
+		},
+		{
+			name: "dotdot-traversal-data-dir",
+			want: "clean absolute path",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": "/var/lib/gosingbox/../etc/gosingbox"}),
+		},
+		{
+			name: "trailing-slash-data-dir",
+			want: "clean absolute path",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": "/var/lib/gosingbox/acme/"}),
+		},
+		{
+			name: "root-slash-data-dir",
+			want: "clean absolute path",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": "/"}),
+		},
+		{
+			name: "env-expansion-data-dir",
+			want: "environment variable",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": "/var/lib/gosingbox/$HOME"}),
+		},
+		{
+			name: "non-string-data-dir",
+			want: "must be a string",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": 123}),
+		},
+		{
+			name: "regular-file-as-data-dir",
+			want: "must reference a directory",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": regularFile}),
+		},
+		{
+			name: "escaping-symlink-leaf-dir",
+			want: "resolves outside allowed certificate provider directories",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": escapeSymlinkDir}),
+		},
+		{
+			name: "escaping-symlink-ancestor-dir",
+			want: "resolves outside allowed certificate provider directories",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": filepath.Join(escapeSymlinkDir, "nested", "certs")}),
+		},
+		{
+			name: "dangling-symlink-dir",
+			want: "resolves outside allowed certificate provider directories",
+			cfg:  providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": filepath.Join(danglingSymlinkDir, "certs")}),
+		},
+		{
+			name: "mutual-exclusion-acme-and-provider",
+			want: "mutually exclusive",
+			cfg: func() map[string]any {
+				c := providerTLSConfig(nil, map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": "/var/lib/gosingbox/acme"})
+				first(c)["tls"].(map[string]any)["acme"] = map[string]any{"domain": []any{"node.example.test"}}
+				return c
+			}(),
+		},
+		{
+			name: "disabled-tls-still-validates-provider",
+			want: "outside allowed certificate provider directories",
+			cfg: func() map[string]any {
+				c := config(t)
+				c["inbounds"] = append(c["inbounds"].([]any), map[string]any{
+					"type": "vless", "tag": "vl-disabled-tls",
+					"tls": map[string]any{
+						"enabled":              false,
+						"certificate_provider": map[string]any{"type": "acme", "domain": []any{"node.example.test"}, "data_directory": "/tmp/evil"},
+					},
+				})
+				return c
+			}(),
+		},
+	}
+	for _, tc := range rejectCases {
+		t.Run("reject-"+tc.name, func(t *testing.T) {
+			if _, err := prepare(t, tc.cfg, m); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
