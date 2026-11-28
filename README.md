@@ -7,7 +7,7 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 > 原生模式支持 **AnyTLS（普通 TLS）**、**TCP VLESS（保留 TLS/Reality 和 flow）**、
 > **SS2022 AES-128/256-GCM 多用户**；Xray 输入继续沿用原有转译行为。
 
-当前发布版本 **3.4.1.25**，内嵌 sing-box **1.14.3**，Panel 上报 `nodeVersion=3.4.1`。
+当前发布版本 **3.4.1.26**，内嵌 sing-box **1.14.3**，Panel 上报 `nodeVersion=3.4.1`。
 原生集成包含 [节点能力扩展 v1](docs/node-capabilities.md)、
 [按入站管理用户及 AnyTLS 生命周期](docs/user-lifecycle.md) 和
 [原生配置入口](docs/native-config.md)。已与配套修改版 Panel 完成原生 Profile、权限、
@@ -15,7 +15,7 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 原生配置需要支持该扩展的 Panel；仅升级节点不会给官方 Panel 增加配置编辑能力。
 
 发布渠道覆盖 **Docker Hub、Bitbucket 与 GitHub**。请使用下方一键安装入口或镜像
-`rwnode/gosingbox:3.4.1.25`。版本演进与兼容边界见 [3.4.1.25 发布说明](docs/releases/3.4.1.25.md)。
+`rwnode/gosingbox:3.4.1.26`。版本演进与兼容边界见 [3.4.1.26 发布说明](docs/releases/3.4.1.26.md)。
 
 ## 特性
 
@@ -33,10 +33,10 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
   握手（HKDF-SHA256，对齐官方 `decode-servername.util.ts`）。
 - **preStart**：`cleanupSockets` 在每次 sing-box (re)start 前清理遗留 unix socket。
 - **postStart**（官方 3.4.2）：core 成功启动后发送 `service.core_started` webhook。
-- **单实例锁**：抽象 unix socket 防止同机多实例。
+- **单实例锁**：抽象 unix socket 防止同机误跑多实例（同机有意多开时可配合 `NFTABLES_TABLE_NAME` 与 `SUPPRESS_DUPLICATE_INSTANCE_WARNING=true`）。
 - 一键安装/升级/卸载（OpenRC / systemd）。
 - geo 检测（内置 geocheck）、ASN shared lists、nftables ingress/egress filter
-  （含 `NFTABLES_ACCEPT_REPLY_TRAFFIC` 回程流量放行）。
+  （含 `NFTABLES_TABLE_NAME` 自定义表名与 `NFTABLES_ACCEPT_REPLY_TRAFFIC` 回程流量放行）。
 
 ## 一键安装（OpenRC / systemd）
 
@@ -66,7 +66,7 @@ Alpine 用 OpenRC，Debian/Ubuntu/Arch 等用 systemd。
 ## Docker 安装（推荐用于通用 Linux）
 
 Docker 版使用单进程 Alpine 镜像（内嵌 sing-box，不包含 Node.js、Xray 或 s6），默认镜像：
-`rwnode/gosingbox:latest`。生产部署可固定为 `rwnode/gosingbox:3.4.1.25`。
+`rwnode/gosingbox:latest`。生产部署可固定为 `rwnode/gosingbox:3.4.1.26`。
 
 一键安装（从 GitHub）：
 
@@ -129,7 +129,9 @@ Docker 版固定使用 `network_mode: host`，因为 Panel 会动态下发用户
 | `SINGBOX_GEO_DIR` | — | geosite/geoip rule-set(.srs) 下载缓存目录 |
 | `ASN_INDEX_PATH` | — | asn-prefixes.json（remnawave/asn-index，ASN shared list 用） |
 | `SNI_VERIFICATION` | `false` | 按 SECRET_KEY 派生私有 SNI 并校验 mTLS 握手 |
+| `NFTABLES_TABLE_NAME` | `remnanode` | 自定义 nftables `inet` 表名（`^[A-Za-z_][A-Za-z0-9_-]{0,62}$`） |
 | `NFTABLES_ACCEPT_REPLY_TRAFFIC` | `false` | egress filter 放行已有连接的回程流量（conntrack established/related） |
+| `SUPPRESS_DUPLICATE_INSTANCE_WARNING` | `false` | 同机多实例共存时放行全局单实例锁冲突并抑制重复实例告警 |
 
 其余见 `scripts/go-standalone/env.example`。gosingbox 使用内嵌 sing-box，不使用外部
 sing-box 可执行文件、外部配置文件或独立 sing-box 日志目录。

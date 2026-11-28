@@ -14,4 +14,7 @@ services:
     environment:
       - NODE_PORT=2222
       - SECRET_KEY=""
+      # - NFTABLES_TABLE_NAME=remnanode
+      # - NFTABLES_ACCEPT_REPLY_TRAFFIC=false
+      # - SUPPRESS_DUPLICATE_INSTANCE_WARNING=false
 

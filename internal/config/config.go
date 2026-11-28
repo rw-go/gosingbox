@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	"github.com/rwnode/rwnode-gosingbox/internal/nftables"
 )
 
 type Config struct {
@@ -34,9 +36,17 @@ type Config struct {
 	// (SNI must equal the value derived from the SECRET_KEY material).
 	SNIVerification bool
 
+	// NftablesTableName mirrors official NFTABLES_TABLE_NAME:
+	// customizes the inet table name managed via nft (defaults to "remnanode").
+	NftablesTableName string
+
 	// NftablesAcceptReplyTraffic mirrors official NFTABLES_ACCEPT_REPLY_TRAFFIC:
 	// the egress filter accepts established/related reply flows.
 	NftablesAcceptReplyTraffic bool
+
+	// SuppressDuplicateInstanceWarning mirrors official SUPPRESS_DUPLICATE_INSTANCE_WARNING:
+	// when true, allows running alongside another node instance holding the global lock.
+	SuppressDuplicateInstanceWarning bool
 }
 
 func envOr(key, def string) string {
@@ -67,21 +77,27 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	nftTableName, err := nftables.ValidateTableName(os.Getenv("NFTABLES_TABLE_NAME"))
+	if err != nil {
+		return nil, err
+	}
 	cfg := &Config{
-		NodePort:                   nodePort,
-		SecretKey:                  os.Getenv("SECRET_KEY"),
-		LogLevel:                   envOr("LOG_LEVEL", "info"),
-		InternalRESTToken:          envOr("INTERNAL_REST_TOKEN", ""),
-		InternalSocketPath:         envOr("INTERNAL_SOCKET_PATH", ""),
-		SingboxStatsAddr:           envOr("SINGBOX_STATS_ADDRESS", "127.0.0.1:6450"),
-		SingboxClashAddr:           envOr("SINGBOX_CLASH_ADDRESS", "127.0.0.1:9090"),
-		SingboxLogLevel:            envOr("SINGBOX_LOG_LEVEL", "warn"),
-		SingboxDebounceMs:          debounceMs,
-		SingboxListen:              os.Getenv("SINGBOX_LISTEN"),
-		SingboxGeoDir:              os.Getenv("SINGBOX_GEO_DIR"),
-		AsnIndexPath:               os.Getenv("ASN_INDEX_PATH"),
-		SNIVerification:            os.Getenv("SNI_VERIFICATION") == "true",
-		NftablesAcceptReplyTraffic: os.Getenv("NFTABLES_ACCEPT_REPLY_TRAFFIC") == "true",
+		NodePort:                         nodePort,
+		SecretKey:                        os.Getenv("SECRET_KEY"),
+		LogLevel:                         envOr("LOG_LEVEL", "info"),
+		InternalRESTToken:                envOr("INTERNAL_REST_TOKEN", ""),
+		InternalSocketPath:               envOr("INTERNAL_SOCKET_PATH", ""),
+		SingboxStatsAddr:                 envOr("SINGBOX_STATS_ADDRESS", "127.0.0.1:6450"),
+		SingboxClashAddr:                 envOr("SINGBOX_CLASH_ADDRESS", "127.0.0.1:9090"),
+		SingboxLogLevel:                  envOr("SINGBOX_LOG_LEVEL", "warn"),
+		SingboxDebounceMs:                debounceMs,
+		SingboxListen:                    os.Getenv("SINGBOX_LISTEN"),
+		SingboxGeoDir:                    os.Getenv("SINGBOX_GEO_DIR"),
+		AsnIndexPath:                     os.Getenv("ASN_INDEX_PATH"),
+		SNIVerification:                  os.Getenv("SNI_VERIFICATION") == "true",
+		NftablesTableName:                nftTableName,
+		NftablesAcceptReplyTraffic:       os.Getenv("NFTABLES_ACCEPT_REPLY_TRAFFIC") == "true",
+		SuppressDuplicateInstanceWarning: os.Getenv("SUPPRESS_DUPLICATE_INSTANCE_WARNING") == "true",
 	}
 
 	if cfg.SecretKey == "" {

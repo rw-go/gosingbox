@@ -18,7 +18,13 @@ import (
 )
 
 const (
-	tableName     = "remnanode"
+	// DefaultTableName mirrors upstream remnawave/node NFTABLES_TABLE_NAME default.
+	DefaultTableName = "remnanode"
+
+	// MaxTableNameLen matches upstream remnawave/node config.schema.ts
+	// (/^[A-Za-z_][A-Za-z0-9_-]{0,62}$/, 63 chars + NUL = 64 bytes).
+	MaxTableNameLen = 63
+
 	setTorrent    = "torrent-blocker"
 	setIngress    = "ingress-filter-ip"
 	setIngress6   = "ingress-filter-ip6"
@@ -27,10 +33,86 @@ const (
 	setEgressPort = "egress-filter-port"
 )
 
+// CommandRunner executes a single `nft` invocation and returns combined output.
+type CommandRunner func(args ...string) ([]byte, error)
+
+// Option configures a Manager at construction time.
+type Option func(*options)
+
+type options struct {
+	tableName string
+	runner    CommandRunner
+}
+
+// WithTableName sets a custom nftables inet table name (empty/whitespace falls
+// back to DefaultTableName; invalid names cause New to return an error).
+func WithTableName(name string) Option {
+	return func(o *options) {
+		o.tableName = name
+	}
+}
+
+// WithCommandRunner overrides the underlying `nft` command executor (used by
+// unit/controller tests so table operations can be verified without root).
+func WithCommandRunner(fn CommandRunner) Option {
+	return func(o *options) {
+		o.runner = fn
+	}
+}
+
+// ValidateTableName normalizes and validates an NFTABLES_TABLE_NAME value.
+// Empty or whitespace-only input resolves to DefaultTableName ("remnanode").
+// Non-empty values must match ^[A-Za-z_][A-Za-z0-9_-]{0,62}$ with no embedded
+// or trailing newlines/metacharacters so injection into `nft` CLI or `nft -f -`
+// scripts is impossible.
+func ValidateTableName(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return DefaultTableName, nil
+	}
+	if strings.ContainsAny(raw, "\r\n") {
+		return "", fmt.Errorf("invalid NFTABLES_TABLE_NAME %q: newline characters are not allowed", raw)
+	}
+	name := strings.TrimSpace(raw)
+	if !isValidTableIdentifier(name) {
+		return "", fmt.Errorf(
+			"invalid NFTABLES_TABLE_NAME %q: must start with a letter or underscore and contain only ASCII letters, digits, '_' or '-' (max %d chars)",
+			raw, MaxTableNameLen,
+		)
+	}
+	return name, nil
+}
+
+func isValidTableIdentifier(name string) bool {
+	if len(name) == 0 || len(name) > MaxTableNameLen {
+		return false
+	}
+	first := name[0]
+	if !isASCIIAlpha(first) && first != '_' {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		c := name[i]
+		if !isASCIIAlpha(c) && !isASCIIDigit(c) && c != '_' && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIAlpha(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+func isASCIIDigit(c byte) bool {
+	return c >= '0' && c <= '9'
+}
+
 // Manager wraps the nft CLI.
 type Manager struct {
 	mu                 sync.Mutex
 	bin                string
+	tableName          string
+	runner             CommandRunner
 	available          bool
 	acceptReplyTraffic bool
 }
@@ -42,23 +124,63 @@ type BlockEntry struct {
 	Timeout int    `json:"timeout"`
 }
 
-// New probes for the nft binary and CAP_NET_ADMIN. acceptReplyTraffic mirrors
-// the official NFTABLES_ACCEPT_REPLY_TRAFFIC option: when true, the egress
-// filter accepts established/related flows so reply traffic is not dropped.
-func New(acceptReplyTraffic bool) *Manager {
-	bin := "nft"
-	if path, err := exec.LookPath(bin); err == nil {
-		bin = path
-	} else {
-		return &Manager{bin: bin, available: false}
+// New validates options and probes for the nft binary and CAP_NET_ADMIN.
+// acceptReplyTraffic mirrors the official NFTABLES_ACCEPT_REPLY_TRAFFIC option:
+// when true, the egress filter accepts established/related flows so reply
+// traffic is not dropped.
+func New(acceptReplyTraffic bool, opts ...Option) (*Manager, error) {
+	var cfg options
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
 	}
-	m := &Manager{bin: bin, available: true, acceptReplyTraffic: acceptReplyTraffic}
+	tbl, err := ValidateTableName(cfg.tableName)
+	if err != nil {
+		return nil, err
+	}
+
+	bin := "nft"
+	runner := cfg.runner
+	if runner == nil {
+		path, lookErr := exec.LookPath(bin)
+		if lookErr != nil {
+			return &Manager{
+				bin:                bin,
+				tableName:          tbl,
+				available:          false,
+				acceptReplyTraffic: acceptReplyTraffic,
+			}, nil
+		}
+		bin = path
+		runner = func(args ...string) ([]byte, error) {
+			return exec.Command(bin, args...).CombinedOutput()
+		}
+	}
+
+	m := &Manager{
+		bin:                bin,
+		tableName:          tbl,
+		runner:             runner,
+		available:          true,
+		acceptReplyTraffic: acceptReplyTraffic,
+	}
 	// Probe capability by listing the ruleset; a non-root/CAP_NET_ADMIN process
 	// will fail here.
 	if err := m.run("list", "tables"); err != nil {
 		m.available = false
 	}
-	return m
+	return m, nil
+}
+
+// TableName returns the configured nftables inet table name.
+func (m *Manager) TableName() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.tableName == "" {
+		return DefaultTableName
+	}
+	return m.tableName
 }
 
 // Available reports whether nft is usable.
@@ -68,8 +190,18 @@ func (m *Manager) Available() bool {
 	return m.available
 }
 
+func (m *Manager) validatedTableLocked() (string, error) {
+	if !isValidTableIdentifier(m.tableName) {
+		return "", fmt.Errorf("invalid nftables table name: %q", m.tableName)
+	}
+	return m.tableName, nil
+}
+
 func (m *Manager) run(args ...string) error {
-	out, err := exec.Command(m.bin, args...).CombinedOutput()
+	if m.runner == nil {
+		return fmt.Errorf("nft runner unavailable")
+	}
+	out, err := m.runner(args...)
 	if err != nil {
 		return fmt.Errorf("nft %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
@@ -77,22 +209,26 @@ func (m *Manager) run(args ...string) error {
 }
 
 // CreateTable (re)creates the firewall table, base chains and sets. It is
-// idempotent: the table is flushed first if it already exists.
+// idempotent: the table is deleted first if it already exists.
 func (m *Manager) CreateTable() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.available {
 		return fmt.Errorf("nft unavailable")
 	}
+	tbl, err := m.validatedTableLocked()
+	if err != nil {
+		return err
+	}
 
-	m.dropSetIfExists()
-	if err := m.run("add", "table", "inet", tableName); err != nil {
+	m.dropTableIfExistsLocked(tbl)
+	if err := m.run("add", "table", "inet", tbl); err != nil {
 		return err
 	}
 
 	// Base chains: accept by default, drop only set members.
 	for _, chain := range []string{"input", "forward", "output"} {
-		if err := m.run("add", "chain", "inet", tableName, chain, "{ type filter hook "+chain+" priority filter; policy accept; }"); err != nil {
+		if err := m.run("add", "chain", "inet", tbl, chain, "{ type filter hook "+chain+" priority filter; policy accept; }"); err != nil {
 			return err
 		}
 	}
@@ -109,30 +245,30 @@ func (m *Manager) CreateTable() error {
 		{setEgress, "ipv4_addr"},
 		{setEgress6, "ipv6_addr"},
 	} {
-		if err := m.run("add", "set", "inet", tableName, spec.name, fmt.Sprintf("{ type %s; flags interval, timeout; }", spec.typ)); err != nil {
+		if err := m.run("add", "set", "inet", tbl, spec.name, fmt.Sprintf("{ type %s; flags interval, timeout; }", spec.typ)); err != nil {
 			return err
 		}
 	}
 
 	// Egress port set (inet_service, used by tcp/udp dport lookups).
-	if err := m.run("add", "set", "inet", tableName, setEgressPort, "{ type inet_service; flags interval; }"); err != nil {
+	if err := m.run("add", "set", "inet", tbl, setEgressPort, "{ type inet_service; flags interval; }"); err != nil {
 		return err
 	}
 
 	// Ingress drop rules (input + forward) for torrent-blocker and ingress sets.
 	for _, set := range []string{setTorrent, setTorrent + "6"} {
-		if err := m.run("add", "rule", "inet", tableName, "input", ipLiteral(set)+" saddr @"+set+" drop"); err != nil {
+		if err := m.run("add", "rule", "inet", tbl, "input", ipLiteral(set)+" saddr @"+set+" drop"); err != nil {
 			return err
 		}
-		if err := m.run("add", "rule", "inet", tableName, "forward", ipLiteral(set)+" saddr @"+set+" drop"); err != nil {
+		if err := m.run("add", "rule", "inet", tbl, "forward", ipLiteral(set)+" saddr @"+set+" drop"); err != nil {
 			return err
 		}
 	}
 	for _, set := range []string{setIngress, setIngress6} {
-		if err := m.run("add", "rule", "inet", tableName, "input", ipLiteral(set)+" saddr @"+set+" drop"); err != nil {
+		if err := m.run("add", "rule", "inet", tbl, "input", ipLiteral(set)+" saddr @"+set+" drop"); err != nil {
 			return err
 		}
-		if err := m.run("add", "rule", "inet", tableName, "forward", ipLiteral(set)+" saddr @"+set+" drop"); err != nil {
+		if err := m.run("add", "rule", "inet", tbl, "forward", ipLiteral(set)+" saddr @"+set+" drop"); err != nil {
 			return err
 		}
 	}
@@ -140,22 +276,22 @@ func (m *Manager) CreateTable() error {
 	// drop rules (NFTABLES_ACCEPT_REPLY_TRAFFIC). Without this, dropping an
 	// egress IP/port also tears down reply traffic of existing connections.
 	if m.acceptReplyTraffic {
-		if err := m.run("add", "rule", "inet", tableName, "output", "ct state established,related accept"); err != nil {
+		if err := m.run("add", "rule", "inet", tbl, "output", "ct state established,related accept"); err != nil {
 			return err
 		}
 	}
 
 	// Egress drop rules (output) for egress sets.
 	for _, set := range []string{setEgress, setEgress6} {
-		if err := m.run("add", "rule", "inet", tableName, "output", ipLiteral(set)+" daddr @"+set+" drop"); err != nil {
+		if err := m.run("add", "rule", "inet", tbl, "output", ipLiteral(set)+" daddr @"+set+" drop"); err != nil {
 			return err
 		}
 	}
 	// Egress port drop rules (tcp + udp dport).
-	if err := m.run("add", "rule", "inet", tableName, "output", "tcp dport @"+setEgressPort+" drop"); err != nil {
+	if err := m.run("add", "rule", "inet", tbl, "output", "tcp dport @"+setEgressPort+" drop"); err != nil {
 		return err
 	}
-	if err := m.run("add", "rule", "inet", tableName, "output", "udp dport @"+setEgressPort+" drop"); err != nil {
+	if err := m.run("add", "rule", "inet", tbl, "output", "udp dport @"+setEgressPort+" drop"); err != nil {
 		return err
 	}
 	return nil
@@ -169,18 +305,22 @@ func ipLiteral(set string) string {
 	return "ip"
 }
 
-// DropSet removes the entire table (used before recreate).
-func (m *Manager) dropSetIfExists() {
-	_ = m.run("delete", "table", "inet", tableName)
+// dropTableIfExistsLocked removes the configured table before recreate.
+func (m *Manager) dropTableIfExistsLocked(tbl string) {
+	_ = m.run("delete", "table", "inet", tbl)
 }
 
 // BlockIP adds an IP to the torrent-blocker set (with optional timeout
-// seconds). It also removes the address from any previous entry.
+// seconds).
 func (m *Manager) BlockIP(ip string, timeoutSeconds int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.available {
 		return fmt.Errorf("nft unavailable")
+	}
+	tbl, err := m.validatedTableLocked()
+	if err != nil {
+		return err
 	}
 	set := setFor(ip, setTorrent, setTorrent+"6")
 	if set == "" {
@@ -191,7 +331,7 @@ func (m *Manager) BlockIP(ip string, timeoutSeconds int) error {
 		element = fmt.Sprintf("%s timeout %ds", element, timeoutSeconds)
 	}
 	element += "}"
-	return m.run("add", "element", "inet", tableName, set, element)
+	return m.run("add", "element", "inet", tbl, set, element)
 }
 
 // UnblockIPs removes IPs from the torrent-blocker and ingress-filter sets.
@@ -201,10 +341,14 @@ func (m *Manager) UnblockIPs(ips []string) error {
 	if !m.available {
 		return fmt.Errorf("nft unavailable")
 	}
-	return m.removeIPsLocked(ips, setTorrent, setTorrent+"6", setIngress, setIngress6)
+	tbl, err := m.validatedTableLocked()
+	if err != nil {
+		return err
+	}
+	return m.removeIPsLocked(tbl, ips, setTorrent, setTorrent+"6", setIngress, setIngress6)
 }
 
-func (m *Manager) removeIPsLocked(ips []string, primaryV4, primaryV6, secondaryV4, secondaryV6 string) error {
+func (m *Manager) removeIPsLocked(tbl string, ips []string, primaryV4, primaryV6, secondaryV4, secondaryV6 string) error {
 	sets := make(map[string][]string)
 	seen := make(map[string]struct{})
 	for _, ip := range ips {
@@ -222,12 +366,16 @@ func (m *Manager) removeIPsLocked(ips []string, primaryV4, primaryV6, secondaryV
 	}
 
 	var firstErr error
-	for set, elements := range sets {
-		if err := m.run("delete", "element", "inet", tableName, set, batchElements(elements)); err != nil {
+	for _, set := range []string{primaryV4, primaryV6, secondaryV4, secondaryV6} {
+		elements := sets[set]
+		if len(elements) == 0 {
+			continue
+		}
+		if err := m.run("delete", "element", "inet", tbl, set, batchElements(elements)); err != nil {
 			// A batch delete can fail when any member already expired. Retry each
 			// element to retain the endpoint's idempotent behavior.
 			for _, ip := range elements {
-				if singleErr := m.run("delete", "element", "inet", tableName, set, "{ "+ip+" }"); singleErr != nil && !isMissingElementError(singleErr) && firstErr == nil {
+				if singleErr := m.run("delete", "element", "inet", tbl, set, "{ "+ip+" }"); singleErr != nil && !isMissingElementError(singleErr) && firstErr == nil {
 					firstErr = singleErr
 				}
 			}
@@ -252,7 +400,11 @@ func (m *Manager) AddIngressIPs(ips []string) error {
 	if !m.available {
 		return fmt.Errorf("nft unavailable")
 	}
-	return m.addIPsLocked(ips, setIngress, setIngress6)
+	tbl, err := m.validatedTableLocked()
+	if err != nil {
+		return err
+	}
+	return m.addIPsLocked(tbl, ips, setIngress, setIngress6)
 }
 
 // AddEgressIPs adds IPs to the egress-filter set (used by plugin sync).
@@ -262,10 +414,14 @@ func (m *Manager) AddEgressIPs(ips []string) error {
 	if !m.available {
 		return fmt.Errorf("nft unavailable")
 	}
-	return m.addIPsLocked(ips, setEgress, setEgress6)
+	tbl, err := m.validatedTableLocked()
+	if err != nil {
+		return err
+	}
+	return m.addIPsLocked(tbl, ips, setEgress, setEgress6)
 }
 
-func (m *Manager) addIPsLocked(ips []string, setV4, setV6 string) error {
+func (m *Manager) addIPsLocked(tbl string, ips []string, setV4, setV6 string) error {
 	sets := make(map[string][]string)
 	seen := make(map[string]struct{})
 	for _, ip := range ips {
@@ -280,12 +436,16 @@ func (m *Manager) addIPsLocked(ips []string, setV4, setV6 string) error {
 	}
 
 	var firstErr error
-	for set, elements := range sets {
-		if err := m.run("add", "element", "inet", tableName, set, batchElements(elements)); err != nil {
+	for _, set := range []string{setV4, setV6} {
+		elements := sets[set]
+		if len(elements) == 0 {
+			continue
+		}
+		if err := m.run("add", "element", "inet", tbl, set, batchElements(elements)); err != nil {
 			// Keep the previous per-element semantics when a batch contains an
 			// already-existing member or another partial failure.
 			for _, ip := range elements {
-				if singleErr := m.run("add", "element", "inet", tableName, set, "{ "+ip+" }"); singleErr != nil && firstErr == nil {
+				if singleErr := m.run("add", "element", "inet", tbl, set, "{ "+ip+" }"); singleErr != nil && firstErr == nil {
 					firstErr = singleErr
 				}
 			}
@@ -305,6 +465,10 @@ func (m *Manager) AddEgressPorts(ports []int) error {
 	if !m.available {
 		return fmt.Errorf("nft unavailable")
 	}
+	tbl, err := m.validatedTableLocked()
+	if err != nil {
+		return err
+	}
 	if len(ports) == 0 {
 		return nil
 	}
@@ -318,7 +482,7 @@ func (m *Manager) AddEgressPorts(ports []int) error {
 	if len(elems) == 0 {
 		return nil
 	}
-	return m.run("add", "element", "inet", tableName, setEgressPort, "{ "+strings.Join(elems, ", ")+" }")
+	return m.run("add", "element", "inet", tbl, setEgressPort, "{ "+strings.Join(elems, ", ")+" }")
 }
 
 // setFor returns the v4 or v6 set name for an IP.

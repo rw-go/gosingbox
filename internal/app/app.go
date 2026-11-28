@@ -81,15 +81,67 @@ type App struct {
 	dropWhitelist map[string]struct{}
 }
 
+// Option configures optional App dependencies and settings.
+type Option func(*appOptions)
+
+type appOptions struct {
+	nftOpts []nftables.Option
+}
+
+// WithNftablesTableName configures the nftables inet table name (defaults to "remnanode").
+func WithNftablesTableName(name string) Option {
+	return func(o *appOptions) {
+		o.nftOpts = append(o.nftOpts, nftables.WithTableName(name))
+	}
+}
+
+// WithNftablesOptions appends low-level nftables.Option values (e.g. test command runners).
+func WithNftablesOptions(opts ...nftables.Option) Option {
+	return func(o *appOptions) {
+		o.nftOpts = append(o.nftOpts, opts...)
+	}
+}
+
 // New creates an App around the embedded engine. The legacy debounce argument
 // remains accepted for deployment compatibility; user requests apply synchronously.
-func New(logger *slog.Logger, proc *singbox.Engine, st *state.State, _ int, acceptReplyTraffic bool) *App {
-	nft := nftables.New(acceptReplyTraffic)
+func New(logger *slog.Logger, proc *singbox.Engine, st *state.State, debounceMs int, acceptReplyTraffic bool, opts ...Option) *App {
+	a, err := NewChecked(logger, proc, st, debounceMs, acceptReplyTraffic, opts...)
+	if err != nil {
+		logger.Error("nftables configuration invalid; firewall disabled", "error", err)
+		return &App{
+			logger:             logger,
+			pendingRevocations: map[string]struct{}{},
+			proc:               proc,
+			state:              st,
+			sys:                systemstats.NewReader(),
+			nft:                &nftables.Manager{},
+			statsAddr:          proc.StatsAddr(),
+			clashAddr:          proc.ClashAddr(),
+			logLevel:           proc.LogLevel(),
+			dropWhitelist:      map[string]struct{}{},
+		}
+	}
+	return a
+}
+
+// NewChecked creates an App and returns an explicit error if nftables options
+// (such as NFTABLES_TABLE_NAME) fail validation.
+func NewChecked(logger *slog.Logger, proc *singbox.Engine, st *state.State, _ int, acceptReplyTraffic bool, opts ...Option) (*App, error) {
+	var cfg appOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	nft, err := nftables.New(acceptReplyTraffic, cfg.nftOpts...)
+	if err != nil {
+		return nil, err
+	}
 	if nft.Available() {
 		if err := nft.CreateTable(); err != nil {
-			logger.Warn("nftables table setup failed", "error", err)
+			logger.Warn("nftables table setup failed", "table", nft.TableName(), "error", err)
 		} else {
-			logger.Info("nftables firewall ready")
+			logger.Info("nftables firewall ready", "table", nft.TableName())
 		}
 	} else {
 		logger.Warn("nftables unavailable (no nft binary or no CAP_NET_ADMIN); plugin firewall endpoints degraded")
@@ -105,7 +157,7 @@ func New(logger *slog.Logger, proc *singbox.Engine, st *state.State, _ int, acce
 		clashAddr:          proc.ClashAddr(),
 		logLevel:           proc.LogLevel(),
 		dropWhitelist:      map[string]struct{}{},
-	}
+	}, nil
 }
 
 // Start transplies the panel config and applies it immediately (full push).

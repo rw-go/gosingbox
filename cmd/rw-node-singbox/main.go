@@ -47,13 +47,18 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: parseLogLevel(cfg.LogLevel)}))
 
 	// Acquire the single-instance lock before initializing nftables or the data
-	// plane so a second instance cannot interfere with the first.
+	// plane so a second instance cannot interfere with the first unless
+	// SUPPRESS_DUPLICATE_INSTANCE_WARNING=true explicitly opts into co-hosting.
 	if *serveMode {
 		if err := acquireInstanceLock(logger); err != nil {
-			logger.Error("another instance is already running", "error", err)
-			os.Exit(1)
+			if !cfg.SuppressDuplicateInstanceWarning {
+				logger.Error("another instance is already running", "error", err)
+				os.Exit(1)
+			}
+			logger.Debug("instance lock already held; continuing because SUPPRESS_DUPLICATE_INSTANCE_WARNING=true", "error", err)
+		} else {
+			defer instanceLock.Close()
 		}
-		defer instanceLock.Close()
 	}
 
 	proc := singbox.NewEngine(singbox.Options{
@@ -64,7 +69,18 @@ func main() {
 	})
 
 	st := state.New()
-	application := app.New(logger, proc, st, cfg.SingboxDebounceMs, cfg.NftablesAcceptReplyTraffic)
+	application, err := app.NewChecked(
+		logger,
+		proc,
+		st,
+		cfg.SingboxDebounceMs,
+		cfg.NftablesAcceptReplyTraffic,
+		app.WithNftablesTableName(cfg.NftablesTableName),
+	)
+	if err != nil {
+		logger.Error("init app", "error", err)
+		os.Exit(1)
+	}
 
 	if cfg.AsnIndexPath != "" {
 		if idx, err := asn.Load(cfg.AsnIndexPath); err != nil {

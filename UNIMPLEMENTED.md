@@ -1,7 +1,7 @@
 # 未实现 / 降级功能
 
 本文档记录 `gosingbox`（Go 版节点，sing-box 数据面）相对官方 remnawave/node 的功能
-差距与暂不实现项。对照基准为**官方 3.4.3** 的 Panel-facing contract。
+差距与暂不实现项。对照基准为**官方 3.4.6** 的 Panel-facing contract。
 
 分三类：**未实现**、**类似实现**、**sing-box 下无需实现**。
 
@@ -54,8 +54,9 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
 | `nftables-napi`（官方 native 绑定） | 需 CGO/预编译 `.so`，破坏「无 CGO 单静态二进制」定位；`nft` CLI 已覆盖 |
 | ASN LMDB（官方 asn-lmdb 模块） | JSON index 已够用（可选加载），LMDB 需 CGO |
 | Xray stats 高级字段（如 `sumAvg` 等） | v2ray_api 已覆盖主要计数器；除非 Panel 因缺字段报错再补 |
+| Xray `routing.script`（官方 3.4.5 保留项） | Xray 专属脚本路由扩展，sing-box 1.14 路由引擎无等价字段 |
 
-## 五、已实现（对照 3.4.3）
+## 五、已实现（对照 3.4.6）
 
 ### 端点
 
@@ -73,7 +74,7 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
 | handler | add-user / add-users / remove-user / remove-users | ✅ 同步热插拔（VLESS + SS2022 + AnyTLS，按入站管理） |
 | handler | drop-users-connections / drop-ips | ✅ clash_api `DELETE /connections/:id`（按 email / sourceIP 匹配；跳过白名单 + 默认忽略 IP） |
 | plugin | sync（sharedLists + ingress/egress filter + connection-drop + preStart + postStart） | ✅（`ipList`/`asList` 解析，`ext:` 展开，cleanupSockets，connection-drop 白名单，postStart webhook） |
-| plugin | nftables block-ips / unblock-ips / recreate-tables | ✅ `nft` CLI（含 `NFTABLES_ACCEPT_REPLY_TRAFFIC`） |
+| plugin | nftables block-ips / unblock-ips / recreate-tables | ✅ `nft` CLI（含 `NFTABLES_TABLE_NAME`、`NFTABLES_ACCEPT_REPLY_TRAFFIC`） |
 | internal | get-config | ✅ |
 
 ### 其他能力
@@ -84,8 +85,9 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
 - **connection-drop（断连）**：clash_api `DELETE /connections/:id` 关闭匹配连接（等价官方
   `sockdestroy` 效果，无需 CAP_NET_ADMIN）；实现 `connectionDrop.whitelistIps` 白名单 +
   `DEFAULT_IGNORED_IPS`（回环/未指定/广播及 CIDR 形式）。
-- **单实例锁**：抽象 unix socket `\0rwnode-lock` 防多实例（对齐官方 `acquire-instance-lock`，
-  获取失败仅告警不退出）。
+- **单实例锁**：抽象 unix socket `\0rwnode-lock` 防误启动重复实例破坏现有 nftables/监听端口
+  （默认获取失败在初始化 nftables 前直接报错退出；显式设置 `SUPPRESS_DUPLICATE_INSTANCE_WARNING=true`
+  时放行锁冲突，便于配合独立 `NFTABLES_TABLE_NAME` 同机多实例部署）。
 - **ASN shared lists**：`internal/asn` 读 `asn-prefixes.json`（remnawave/asn-index JSON 资产），
   需 env `ASN_INDEX_PATH` 指定，未配置时 `asList` 解析降级跳过。
 - **在线用户 / 单用户 IP / 最后活动时间**：clash_api `/connections`（fork `rwnode/sing-box-fork`
@@ -110,6 +112,10 @@ VMess / Trojan / 老式 SS / Hysteria / Hysteria2 及 ws·grpc·xhttp 等传输�
   请求透传）；contract 移除 `CipherType.NONE` 枚举值。
 - 已对齐官方 **3.4.3**：官方为纯维护版本（`src/` 与 `libs/` contract 零变更，仅 version
   bump + Docker 基础镜像 node:24.20→24.22），无代码同步项；`nodeVersion` 基线切换为 3.4.3。
+- 已对齐官方 **3.4.4–3.4.6**：同步官方 3.4.5（`103fb8fc`）新增的 `NFTABLES_TABLE_NAME`
+  （默认 `remnanode`，空值/纯空白回退默认，严格校验 `^[A-Za-z_][A-Za-z0-9_-]{0,62}$` 防止
+  `nft` 参数/脚本注入）与 `SUPPRESS_DUPLICATE_INSTANCE_WARNING`；3.4.5 的 Xray `routing.script`
+  保留项属 Xray 专属能力（记录于上表），3.4.4 与 3.4.6 均为依赖/内核维护版本，无额外 contract 变更。
 - **已知差异·空插件推送清理**：官方收到 `plugin == null` 时 `resetPlugins()` 重置全部插件
   状态（含 postStart/preStart/connectionDrop 白名单）并停 Xray；gosingbox 仅重建 nft 表，
   已缓存的 postStart webhook / preStart cleanupSockets / drop 白名单不清空（下次
