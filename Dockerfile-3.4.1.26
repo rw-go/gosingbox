@@ -1,0 +1,4 @@
+FROM rwnode/gosingbox:3.4.1.25
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.version="3.4.1.26" org.opencontainers.image.revision="${SOURCE_REVISION}"
+COPY --chmod=755 gosingbox /usr/local/bin/gosingbox

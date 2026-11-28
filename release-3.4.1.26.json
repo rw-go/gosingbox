@@ -1,0 +1,33 @@
+{
+  "version": "3.4.1.26",
+  "sourceRevision": "2edb4832bd8de01e3ae69f96cf55371b82f19f03",
+  "platform": "linux/amd64",
+  "nodeVersion": "3.4.1",
+  "singboxVersion": "1.14.3",
+  "binaries": {
+    "gosingbox": "0d30e4d1d98fe5ff646aad9648a0421feb498b7c5c420e07f06b39b2f8d92659",
+    "geocheck": "f7994c73780d37d56a21f945431f7986c33360f8b50aaa98f0e2e3fa0a144316",
+    "gosingbox-entrypoint": "fa8a0ebd1fd17221d7d9175e74803a1e3f1cb2bbc3dff8d75436c54a4efa9b87"
+  },
+  "package": "gosingbox-3.4.1.26-linux-amd64.tar.gz",
+  "packageSha256": "2749b77231778e1ba1961aa1d2927f86b48bb1cd54a3a89c05ed28430c4aa3b5",
+  "docker": {
+    "reference": "3.4.1.26",
+    "digest": "sha256:1fbaa90083a610169e91a5ce64610e03bcbf71ab78d720d855e2f095376734fd",
+    "platformDigest": "sha256:4f0c1281f93ee0bc8ff51be48cee424c5c7f9519f8011d4041fcdbedbc686132",
+    "configDigest": "sha256:b60d5a485d1cc26657ffdeffe5ef52b31879d18e2f2cca1c5c5c42c711675af7",
+    "layers": [
+      "sha256:42cc7504d9d5f918d6ca52d96706e7b602c8ffca5b80b1cad44e004e1c69fb70",
+      "sha256:cf22dbeec76a026e8269b8358e88dd89ce3dd3f422743c13a78baacba3b2ce26",
+      "sha256:4c4608d8861402377c77d122f29e921d6ab72c82b0e7bbb88233a77274161a36",
+      "sha256:2ff4e3bf4fd33a641f4a3837ad72c6e4e40fb811654880bb97b154674172c592",
+      "sha256:d9d8312508b8e0526705f550fe7ef2f6bebaa17fc1c6e008986fe81017fcb9ed",
+      "sha256:fee2b786733b4691cb0461ebce35c5be0b8085eca1730cdc5de756c6b5ec8e9e",
+      "sha256:46ed3d48c597f337129209584a9bd9a48f4250ff23df66b83e159f3f52f81729",
+      "sha256:c01c4c2f0af9501e9fa821cf0b40414535f8d368b60f94b1a6f600fed7a5fcf2",
+      "sha256:f279fa41ac0f82be590ce13a24830e47156dd234ba76ff73066717d7d2e4291d",
+      "sha256:d249d6391608a0c3bebb912760f8ab24681993fe99b5f9d9442459046965d1ac",
+      "sha256:9b9bf471497f495267cf250f3b598ea5f341f496b8dd68481c8a2bbc796e37c5"
+    ]
+  }
+}
