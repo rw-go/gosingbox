@@ -14,7 +14,7 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 用户同步、订阅及实际 AnyTLS/VLESS 连接验证；官方 Xray 格式输入保留原有转译路径。
 原生配置需要支持该扩展的 Panel；仅升级节点不会给官方 Panel 增加配置编辑能力。
 
-发布渠道覆盖 **Docker Hub、Bitbucket 与 GitHub**。请使用下方一键安装入口或镜像
+发布渠道覆盖 **GitHub 与 Docker Hub**。请使用下方一键安装入口或镜像
 `rwnode/gosingbox:3.4.1.26`。版本演进与兼容边界见 [3.4.1.26 发布说明](docs/releases/3.4.1.26.md)。
 
 ## 特性
@@ -40,23 +40,17 @@ sing-box，并做到**用户增删不重启监听器**（`UpdatableInbound` 无�
 
 ## 一键安装（OpenRC / systemd）
 
-### 途径 A：从 GitHub 安装
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox.sh | GOSINGBOX_RELEASE_SOURCE=github sh
 ```
 
-### 途径 B：从 Bitbucket 安装
+升级、卸载或查看安装器版本：
 
 ```bash
-wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox.sh | sh
-```
-
-或带参数：
-
-```bash
+curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox.sh | GOSINGBOX_RELEASE_SOURCE=github sh -s -- upgrade
+curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox.sh | GOSINGBOX_RELEASE_SOURCE=github sh -s -- uninstall
 # 查看安装器版本（判断 CDN 是否缓存旧版）
-wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox.sh | sh -s -- --version
+curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox.sh | sh -s -- --version
 ```
 
 脚本会询问 `NODE_PORT`（默认 2222）与 `SECRET_KEY`（面板下发），自动检测 init
@@ -68,25 +62,19 @@ Alpine 用 OpenRC，Debian/Ubuntu/Arch 等用 systemd。
 Docker 版使用单进程 Alpine 镜像（内嵌 sing-box，不包含 Node.js、Xray 或 s6），默认镜像：
 `rwnode/gosingbox:latest`。生产部署可固定为 `rwnode/gosingbox:3.4.1.26`。
 
-一键安装（从 GitHub）：
+一键安装：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox-docker.sh | sh
 ```
 
-或从 Bitbucket：
-
-```bash
-wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox-docker.sh | sh
-```
-
 升级或卸载：
 
 ```bash
-wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox-docker.sh | sh -s -- upgrade
-wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox-docker.sh | sh -s -- uninstall
+curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox-docker.sh | sh -s -- upgrade
+curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox-docker.sh | sh -s -- uninstall
 # 连同配置和数据卷全部删除：
-wget -qO- https://bitbucket.org/rwnode/rwnode-gosingbox/raw/main/scripts/install-gosingbox-docker.sh | sh -s -- uninstall-full
+curl -fsSL https://raw.githubusercontent.com/rw-go/gosingbox/main/scripts/install-gosingbox-docker.sh | sh -s -- uninstall-full
 ```
 
 手动使用 Compose：
